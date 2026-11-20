@@ -28,11 +28,10 @@ import java.util.Map;
 
 /** Pause overlay for the native game; settings are saved for the next runtime start. */
 public final class PauseActivity extends Activity {
-    static final int ORANGE = Color.rgb(255, 164, 66);
-    static final int YELLOW = Color.rgb(255, 211, 79);
+    static final int RED = Color.rgb(230, 18, 34);
+    static final int YELLOW = Color.WHITE;
     static final int WHITE = Color.rgb(239, 241, 250);
     static final int MUTED = Color.rgb(184, 188, 208);
-    static final int PANEL = Color.rgb(23, 25, 47);
     static final String MAP_KEY = "NX_GAMEPAD_MAP";
     static final String[] MAP_ACTIONS_ES = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "−", "L3", "R3",
             "D-pad izquierda", "D-pad arriba", "D-pad derecha", "D-pad abajo"};
@@ -55,12 +54,15 @@ public final class PauseActivity extends Activity {
 
     final List<Choice> choices = new ArrayList<>();
     final Map<String, String> config = new LinkedHashMap<>();
+    final Map<String, Button> optionButtons = new LinkedHashMap<>();
     final List<Button> categoryButtons = new ArrayList<>();
+    final List<Button> verticalNavigation = new ArrayList<>();
     final String[] categories = {
             t("Video", "Video"), t("Rendimiento", "Performance"), t("Efectos", "Effects"),
             t("Interfaz", "Interface"), t("Juego", "Game"), t("Mandos", "Controllers")
     };
     LinearLayout settingsPanel;
+    Button resumeButton, quitButton, firstOptionButton;
     int selectedCategory;
 
     static String t(String es, String en) { return Lang.t(es, en); }
@@ -97,7 +99,7 @@ public final class PauseActivity extends Activity {
         choices.add(new Choice(categories[1], "NX_FPS_CAP", "Límite de fotogramas", "Frame rate limit",
                 new String[] {"30", "60"}, new String[] {"30 fps", "60 fps · experimental"},
                 new String[] {"30 fps", "60 fps · experimental"}));
-        choices.add(toggle(categories[1], "NX_SHADOWS", "Sombras", "Shadows", true));
+        choices.add(toggle(categories[1], "NX_SHADOWS", "Sombras", "Shadows", false));
         choices.add(new Choice(categories[1], "NX_MALI_LOW_SHADOWS", "Calidad de sombras", "Shadow quality",
                 new String[] {"1", "0"}, new String[] {"Baja · más rendimiento", "Original"},
                 new String[] {"Low · better performance", "Original"}));
@@ -109,10 +111,10 @@ public final class PauseActivity extends Activity {
                 new String[] {"0", "1"}, new String[] {"Activados", "Desactivados · más FPS"},
                 new String[] {"Enabled", "Disabled · more FPS"}));
 
-        choices.add(toggle(categories[3], "NX_SHOW_FPS", "Contador de FPS", "FPS counter", true));
+        choices.add(toggle(categories[3], "NX_SHOW_FPS", "Contador de FPS", "FPS counter", false));
         choices.add(new Choice(categories[3], "NX_TOUCH_SHOW", "Controles táctiles", "Touch controls",
                 new String[] {"1", "0"}, new String[] {"Activados", "Desactivados"}, new String[] {"On", "Off"}));
-        choices.add(toggle(categories[3], "NX_TOUCH_HIDE", "Ocultar controles táctiles", "Hide touch controls", true));
+        choices.add(toggle(categories[3], "NX_TOUCH_HIDE", "Ocultar controles táctiles", "Hide touch controls", false));
         choices.add(new Choice(categories[3], "NX_TOUCH_SIZE", "Tamaño de botones táctiles", "Touch button size",
                 new String[] {"80", "100", "125"}, new String[] {"Pequeño", "Normal", "Grande"},
                 new String[] {"Small", "Normal", "Large"}));
@@ -138,14 +140,15 @@ public final class PauseActivity extends Activity {
     }
 
     Choice toggle(String category, String key, String es, String en, boolean defaultOn) {
+        String off = t("Desactivado", "Off"), on = t("Activado", "On");
         return new Choice(category, key, es, en, new String[] {defaultOn ? "1" : "0", defaultOn ? "0" : "1"},
-                new String[] {t("Activado", "On"), t("Desactivado", "Off")},
-                new String[] {t("Activado", "On"), t("Desactivado", "Off")});
+                defaultOn ? new String[] {on, off} : new String[] {off, on},
+                defaultOn ? new String[] {on, off} : new String[] {off, on});
     }
 
     void buildScreen() {
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.argb(218, 15, 16, 31));
+        frame.setBackgroundColor(Color.argb(218, 5, 5, 8));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(28), dp(18), dp(28), dp(16));
@@ -159,18 +162,18 @@ public final class PauseActivity extends Activity {
         titleBox.addView(text(t("EN PAUSA", "PAUSED"), MUTED, 15, true));
         header.addView(titleBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
-        Button quit = actionButton(t("↪  Salir", "↪  Quit"), false);
-        quit.setOnClickListener(new View.OnClickListener() {
+        quitButton = actionButton(t("↪  Salir", "↪  Quit"), false);
+        quitButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { returnToLauncher(); }
         });
-        header.addView(quit, buttonParams(170, 58));
-        Button resume = actionButton(t("▶  Continuar", "▶  Continue"), true);
-        resume.setOnClickListener(new View.OnClickListener() {
+        header.addView(quitButton, buttonParams(170, 58));
+        resumeButton = actionButton(t("▶  Continuar", "▶  Continue"), false);
+        resumeButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { finish(); }
         });
         LinearLayout.LayoutParams resumeParams = buttonParams(220, 58);
         resumeParams.leftMargin = dp(12);
-        header.addView(resume, resumeParams);
+        header.addView(resumeButton, resumeParams);
         root.addView(header);
 
         LinearLayout body = new LinearLayout(this);
@@ -188,9 +191,9 @@ public final class PauseActivity extends Activity {
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
         settingsPanel.setPadding(dp(22), dp(18), dp(22), dp(14));
         GradientDrawable panelBg = new GradientDrawable();
-        panelBg.setColor(Color.argb(245, 23, 25, 47));
-        panelBg.setCornerRadius(dp(18));
-        panelBg.setStroke(dp(1), Color.rgb(54, 59, 89));
+        panelBg.setColor(Color.argb(245, 8, 7, 9));
+        panelBg.setCornerRadius(dp(5));
+        panelBg.setStroke(dp(2), RED);
         settingsPanel.setBackground(panelBg);
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1);
@@ -200,6 +203,7 @@ public final class PauseActivity extends Activity {
         for (int i = 0; i < categories.length; i++) {
             final int index = i;
             Button category = actionButton(categories[i], i == selectedCategory);
+            category.setTag(Boolean.valueOf(i == selectedCategory));
             category.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
             category.setTextSize(17);
             category.setOnClickListener(new View.OnClickListener() {
@@ -207,6 +211,7 @@ public final class PauseActivity extends Activity {
                     selectedCategory = index;
                     refreshCategories();
                     showCategory();
+                    focusFirstSetting();
                 }
             });
             LinearLayout.LayoutParams catParams = new LinearLayout.LayoutParams(
@@ -216,8 +221,8 @@ public final class PauseActivity extends Activity {
             categoryButtons.add(category);
         }
 
-        TextView hint = text(t("Los cambios se guardan para el próximo inicio del juego.",
-                "Changes are saved for the next game launch."), MUTED, 12, false);
+        TextView hint = text(t("L1/R1: categorías  ·  ↑/↓: opciones  ·  A: seleccionar  ·  B: volver. Los cambios se aplican al próximo inicio.",
+                "L1/R1: categories  ·  ↑/↓: options  ·  A: select  ·  B: back. Changes apply next launch."), MUTED, 12, false);
         hint.setPadding(dp(4), 0, 0, 0);
         root.addView(hint);
 
@@ -226,15 +231,15 @@ public final class PauseActivity extends Activity {
         frame.addView(root, full);
         setContentView(frame);
         showCategory();
-        focusWhenReady(resume);
+        focusWhenReady(resumeButton);
     }
 
     void refreshCategories() {
         for (int i = 0; i < categoryButtons.size(); i++) {
             boolean active = i == selectedCategory;
             Button b = categoryButtons.get(i);
-            b.setTextColor(active ? Color.rgb(42, 27, 30) : WHITE);
-            b.setBackground(buttonBackground(active));
+            b.setTag(Boolean.valueOf(active));
+            styleMenuButton(b, active || b.hasFocus());
         }
     }
 
@@ -243,7 +248,7 @@ public final class PauseActivity extends Activity {
         TextView heading = text(categories[selectedCategory], YELLOW, 23, true);
         settingsPanel.addView(heading);
         View accent = new View(this);
-        accent.setBackgroundColor(ORANGE);
+        accent.setBackgroundColor(RED);
         LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(72), dp(4));
         accentParams.topMargin = dp(10);
         accentParams.bottomMargin = dp(12);
@@ -253,6 +258,11 @@ public final class PauseActivity extends Activity {
         scroll.setFillViewport(false);
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
+        verticalNavigation.clear();
+        verticalNavigation.add(resumeButton);
+        verticalNavigation.add(quitButton);
+        optionButtons.clear();
+        firstOptionButton = null;
         for (final Choice choice : choices) if (choice.category.equals(categories[selectedCategory])) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
@@ -263,8 +273,15 @@ public final class PauseActivity extends Activity {
             value.setTextSize(15);
             value.setMinWidth(dp(150));
             value.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { advance(choice); showCategory(); }
+                @Override public void onClick(View v) { advance(choice, (Button) v); }
             });
+            if ("NX_MALI_LOW_SHADOWS".equals(choice.key) && !"1".equals(config.get("NX_SHADOWS"))) {
+                value.setEnabled(false);
+                value.setAlpha(0.4f);
+            }
+            optionButtons.put(choice.key, value);
+            if (firstOptionButton == null) firstOptionButton = value;
+            verticalNavigation.add(value);
             row.addView(value);
             rows.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64)));
             View divider = new View(this);
@@ -287,6 +304,8 @@ public final class PauseActivity extends Activity {
         configure.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { showGamepadMapper(readGamepadMap()); }
         });
+        if (firstOptionButton == null) firstOptionButton = configure;
+        verticalNavigation.add(configure);
         row.addView(configure);
         rows.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)));
     }
@@ -300,11 +319,14 @@ public final class PauseActivity extends Activity {
         edit.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { startActivity(new Intent(PauseActivity.this, ControlsEditor.class)); }
         });
+        if (firstOptionButton == null) firstOptionButton = edit;
+        verticalNavigation.add(edit);
         row.addView(edit);
         rows.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)));
     }
 
-    void advance(Choice choice) {
+    void advance(Choice choice, Button valueButton) {
+        Map<String, String> previous = new LinkedHashMap<>(config);
         String current = config.get(choice.key);
         int index = 0;
         for (int i = 0; i < choice.values.length; i++) if (choice.values[i].equals(current)) index = i;
@@ -321,7 +343,20 @@ public final class PauseActivity extends Activity {
             if ("low".equals(preset)) config.put("NX_LOD_BIAS", "1");
             else if ("medium".equals(preset)) config.put("NX_LOD_BIAS", "0.5");
         }
-        persist();
+        if (persist()) {
+            valueButton.setText(choiceLabel(choice));
+            if ("NX_SHADOWS".equals(choice.key)) {
+                Button quality = optionButtons.get("NX_MALI_LOW_SHADOWS");
+                if (quality != null) {
+                    boolean enabled = "1".equals(config.get("NX_SHADOWS"));
+                    quality.setEnabled(enabled);
+                    quality.setAlpha(enabled ? 1.0f : 0.4f);
+                }
+            }
+        } else {
+            config.clear();
+            config.putAll(previous);
+        }
     }
 
     String choiceLabel(Choice choice) {
@@ -351,8 +386,12 @@ public final class PauseActivity extends Activity {
                 })
                 .setNeutralButton(t("Restaurar preset", "Restore preset"), new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int which) {
+                        Map<String, String> previous = new LinkedHashMap<>(config);
                         config.remove(MAP_KEY);
-                        persist();
+                        if (!persist()) {
+                            config.clear();
+                            config.putAll(previous);
+                        }
                     }
                 })
                 .setNegativeButton(t("Cerrar", "Close"), null).create();
@@ -383,6 +422,8 @@ public final class PauseActivity extends Activity {
             @Override public boolean onKey(DialogInterface d, int key, KeyEvent event) {
                 if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return true;
                 if (key == KeyEvent.KEYCODE_BACK || !isGamepadKey(event, key)) return false;
+                int[] previousMap = map.clone();
+                Map<String, String> previousConfig = new LinkedHashMap<>(config);
                 int captured = canonicalKey(key);
                 int old = map[action];
                 for (int i = 0; i < map.length; i++) if (i != action && map[i] == captured) map[i] = old;
@@ -393,8 +434,12 @@ public final class PauseActivity extends Activity {
                     encoded.append(map[i]);
                 }
                 config.put(MAP_KEY, encoded.toString());
-                persist();
-                dialog.dismiss();
+                if (persist()) dialog.dismiss();
+                else {
+                    System.arraycopy(previousMap, 0, map, 0, map.length);
+                    config.clear();
+                    config.putAll(previousConfig);
+                }
                 return true;
             }
         });
@@ -416,8 +461,13 @@ public final class PauseActivity extends Activity {
             String[] fields = encoded.split(",", -1);
             if (fields.length == MAP_ACTIONS_ES.length) try {
                 int[] result = new int[fields.length];
-                for (int i = 0; i < fields.length; i++) result[i] = canonicalKey(Integer.parseInt(fields[i]));
-                return result;
+                boolean valid = true;
+                for (int i = 0; i < fields.length; i++) {
+                    result[i] = canonicalKey(Integer.parseInt(fields[i]));
+                    if (result[i] <= KeyEvent.KEYCODE_UNKNOWN) valid = false;
+                    for (int j = 0; j < i; j++) if (result[i] == result[j]) valid = false;
+                }
+                if (valid) return result;
             } catch (NumberFormatException ignored) {}
         }
         boolean xbox = "1".equals(config.get("NX_GAMEPAD_LAYOUT"));
@@ -464,6 +514,22 @@ public final class PauseActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         int key = event.getKeyCode();
+        if (key == KeyEvent.KEYCODE_BUTTON_L1 || key == KeyEvent.KEYCODE_BUTTON_7
+                || key == KeyEvent.KEYCODE_BUTTON_R1 || key == KeyEvent.KEYCODE_BUTTON_8) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                int direction = key == KeyEvent.KEYCODE_BUTTON_L1 || key == KeyEvent.KEYCODE_BUTTON_7 ? -1 : 1;
+                selectedCategory = (selectedCategory + direction + categories.length) % categories.length;
+                refreshCategories();
+                showCategory();
+                focusFirstSetting();
+            }
+            return true;
+        }
+        if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                moveVertical(key == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1);
+            return true;
+        }
         if (key == KeyEvent.KEYCODE_BUTTON_A) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 View focus = getCurrentFocus();
@@ -484,22 +550,39 @@ public final class PauseActivity extends Activity {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        b.setTextColor(selected ? Color.rgb(42, 27, 30) : WHITE);
+        b.setTextColor(selected ? Color.BLACK : WHITE);
         b.setTextSize(16);
         b.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
         b.setMinHeight(dp(48));
         b.setFocusable(true);
         b.setFocusableInTouchMode(true);
-        b.setBackground(buttonBackground(selected));
+        b.setTag(Boolean.valueOf(selected));
+        b.setBackground(new Launcher.MenuPanelDrawable(dp(4), selected));
+        b.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override public void onFocusChange(View view, boolean focused) {
+                boolean active = Boolean.TRUE.equals(b.getTag());
+                styleMenuButton(b, active || focused);
+            }
+        });
         return b;
     }
 
-    GradientDrawable buttonBackground(boolean selected) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(selected ? ORANGE : Color.argb(225, 25, 27, 52));
-        d.setCornerRadius(dp(14));
-        d.setStroke(dp(1), selected ? ORANGE : Color.rgb(79, 83, 112));
-        return d;
+    void styleMenuButton(Button button, boolean selected) {
+        button.setTextColor(selected ? Color.BLACK : WHITE);
+        button.setBackground(new Launcher.MenuPanelDrawable(dp(4), selected));
+    }
+
+    void focusFirstSetting() {
+        View target = firstOptionButton != null ? firstOptionButton : resumeButton;
+        focusWhenReady(target);
+    }
+
+    void moveVertical(int direction) {
+        if (verticalNavigation.isEmpty()) return;
+        int current = verticalNavigation.indexOf(getCurrentFocus());
+        int next = current < 0 ? (direction > 0 ? 0 : verticalNavigation.size() - 1)
+                : (current + direction + verticalNavigation.size()) % verticalNavigation.size();
+        verticalNavigation.get(next).requestFocus();
     }
 
     LinearLayout.LayoutParams buttonParams(int width, int height) {

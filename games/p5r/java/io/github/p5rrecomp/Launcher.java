@@ -511,7 +511,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.17");
+        version.setText("v0.5.18");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -557,14 +557,14 @@ public class Launcher extends Activity {
         button.setFocusableInTouchMode(true);
         button.setGravity(Gravity.CENTER);
         button.setPadding(dp(22), 0, dp(18), 0);
-        button.setTextColor(Color.WHITE);
+        button.setTextColor(primary ? Color.BLACK : Color.WHITE);
         button.setBackground(new MenuPanelDrawable(dp(4), primary));
         button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View view, boolean focused) {
-                boolean highlighted = primary || focused;
-                button.setTextColor(Color.WHITE);
-                button.setBackground(new MenuPanelDrawable(dp(4), highlighted));
+                boolean selected = focused;
+                button.setTextColor(selected ? Color.BLACK : Color.WHITE);
+                button.setBackground(new MenuPanelDrawable(dp(4), selected));
             }
         });
         return button;
@@ -603,9 +603,9 @@ public class Launcher extends Activity {
             polygon(canvas, 0, 0, width, height, cut,
                     selected ? Color.rgb(238, 0, 28) : Color.rgb(156, 10, 23));
             polygon(canvas, border, border, width - border, height - border,
-                    cut * 0.8f, Color.WHITE);
+                    cut * 0.8f, selected ? Color.rgb(8, 7, 9) : Color.WHITE);
             polygon(canvas, border * 2, border * 2, width - border * 2, height - border * 2,
-                    cut * 0.65f, Color.rgb(8, 7, 9));
+                    cut * 0.65f, selected ? Color.WHITE : Color.rgb(8, 7, 9));
             canvas.restore();
         }
 
