@@ -511,7 +511,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.16");
+        version.setText("v0.5.17");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -899,7 +899,7 @@ public class Launcher extends Activity {
             else if (!prepared()) prepare();
             else if (openGameForRuntime()) {
                 save();
-                startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+                startActivity(new Intent(Launcher.this, GameActivity.class));
             } else {
                 tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
             }
@@ -914,7 +914,7 @@ public class Launcher extends Activity {
             return;
         }
         save();
-        startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+        startActivity(new Intent(Launcher.this, GameActivity.class));
     }
 
     @Override
