@@ -419,7 +419,7 @@ public class Launcher extends Activity {
         brandTag.setTypeface(Typeface.DEFAULT_BOLD);
         top.addView(brandTag, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         TextView version = new TextView(this);
-        version.setText("v0.5.14");
+        version.setText("v0.5.15");
         version.setTextColor(Color.rgb(210, 205, 205));
         version.setTextSize(13);
         top.addView(version);
@@ -442,13 +442,14 @@ public class Launcher extends Activity {
         heroParams.rightMargin = dp(28);
         content.addView(hero, heroParams);
         TextView title = new TextView(this);
-        SpannableString logo = new SpannableString("PERSONA 5\nROYAL");
-        logo.setSpan(new ForegroundColorSpan(Color.rgb(230, 18, 34)), 8, 9, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        SpannableString logo = new SpannableString("P5R\nANDROID");
+        logo.setSpan(new ForegroundColorSpan(Color.rgb(230, 18, 34)), 1, 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         title.setText(logo);
         title.setTextColor(Color.WHITE);
-        title.setTextSize(48);
-        title.setLineSpacing(-dp(5), 1.0f);
-        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        title.setTextSize(52);
+        title.setLineSpacing(-dp(6), 1.0f);
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        title.setShadowLayer(dp(2), dp(2), dp(2), Color.BLACK);
         hero.addView(title);
         View accent = new View(this);
         accent.setBackgroundColor(Color.rgb(224, 18, 34));
@@ -514,15 +515,32 @@ public class Launcher extends Activity {
         root.addView(statusCard, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         setContentView(root);
+        focusWhenReady(play);
         refresh();
+    }
+
+    void focusWhenReady(final View view) {
+        view.setFocusable(true);
+        view.setFocusableInTouchMode(true);
+        view.post(new Runnable() {
+            @Override
+            public void run() {
+                view.requestFocus();
+            }
+        });
     }
 
     Button menuButton(String text, boolean primary) {
         Button button = new Button(this);
         button.setText(text);
-        button.setTextSize(21);
-        button.setAllCaps(false);
-        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setTextSize(27);
+        button.setAllCaps(true);
+        button.setLetterSpacing(0.015f);
+        button.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        button.setShadowLayer(dp(2), dp(1), dp(2), Color.BLACK);
+        button.setFocusable(true);
+        button.setFocusableInTouchMode(true);
+        button.setGravity(Gravity.CENTER);
         button.setPadding(dp(22), 0, dp(18), 0);
         button.setTextColor(primary ? Color.rgb(30, 14, 14) : Color.WHITE);
         GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
@@ -531,6 +549,19 @@ public class Launcher extends Activity {
         background.setCornerRadius(dp(8));
         background.setStroke(dp(1), primary ? Color.rgb(255, 226, 151) : Color.rgb(100, 69, 50));
         button.setBackground(background);
+        button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View view, boolean focused) {
+                boolean highlighted = primary || focused;
+                GradientDrawable focusedBackground = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                        highlighted ? new int[] {Color.rgb(244, 190, 70), Color.rgb(255, 225, 139)}
+                                : new int[] {Color.argb(220, 43, 27, 31), Color.argb(220, 19, 16, 20)});
+                focusedBackground.setCornerRadius(dp(8));
+                focusedBackground.setStroke(dp(2), highlighted ? Color.rgb(255, 226, 151) : Color.rgb(100, 69, 50));
+                button.setTextColor(highlighted ? Color.rgb(30, 14, 14) : Color.WHITE);
+                button.setBackground(focusedBackground);
+            }
+        });
         return button;
     }
 
@@ -553,9 +584,12 @@ public class Launcher extends Activity {
         back.setText(t("← Inicio", "← Home"));
         back.setAllCaps(false);
         back.setTextColor(Color.rgb(220, 188, 111));
+        back.setFocusable(true);
+        back.setFocusableInTouchMode(true);
         back.setBackgroundColor(Color.TRANSPARENT);
         back.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         root.addView(back, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        focusWhenReady(back);
         back.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -781,6 +815,28 @@ public class Launcher extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
         setContentView(scroll);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                View focused = getCurrentFocus();
+                if (focused != null && focused.isEnabled() && focused.isClickable()) {
+                    focused.performClick();
+                    return true;
+                }
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) return true;
+        } else if (keyCode == KeyEvent.KEYCODE_BUTTON_B) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                if (settingsVisible) onBackPressed();
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) return true;
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     void startGame() {
