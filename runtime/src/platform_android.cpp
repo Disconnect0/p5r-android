@@ -941,6 +941,22 @@ extern "C" JNIEXPORT jlong JNICALL Java_io_github_belmantegu_wonderrecomp_GameAc
     return jlong(nx::g_frame.load());
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_io_github_p5rrecomp_PauseActivity_updateRuntimeOption(JNIEnv* env, jclass, jstring key, jstring value) {
+    if (!key || !value) return;
+    const char* key_chars = env->GetStringUTFChars(key, nullptr);
+    const char* value_chars = env->GetStringUTFChars(value, nullptr);
+    if (!key_chars || !value_chars) {
+        if (key_chars) env->ReleaseStringUTFChars(key, key_chars);
+        if (value_chars) env->ReleaseStringUTFChars(value, value_chars);
+        return;
+    }
+    // Keep this bridge scoped to runtime options so a Java UI bug cannot overwrite arbitrary process variables.
+    if (std::strncmp(key_chars, "NX_", 3) == 0) setenv(key_chars, value_chars, 1);
+    env->ReleaseStringUTFChars(key, key_chars);
+    env->ReleaseStringUTFChars(value, value_chars);
+}
+
 extern "C" JNIEXPORT void ANativeActivity_onCreate(ANativeActivity* activity, void* saved, size_t size) {
     g_activity = activity;
     if (activity->internalDataPath) nx::plat::g_internal_dir = activity->internalDataPath;

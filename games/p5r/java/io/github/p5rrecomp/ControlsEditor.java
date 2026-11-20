@@ -100,6 +100,7 @@ public class ControlsEditor extends Activity {
                 Map<String, String> config = Launcher.readConfig(configFile());
                 config.put("NX_TOUCH_LAYOUT", serialize());
                 if (Launcher.writeConfig(configFile(), config)) {
+                    PauseActivity.updateRuntimeOption("NX_TOUCH_LAYOUT", config.get("NX_TOUCH_LAYOUT"));
                     Toast.makeText(ControlsEditor.this, t("Controles guardados", "Controls saved"), Toast.LENGTH_SHORT).show();
                     finish();
                 } else {

@@ -90,25 +90,19 @@ bool gamepad_swap_abxy() {
 }
 
 float stick_sens() {
-    static const float s = [] {
-        const char* e = std::getenv("NX_STICK_SENSITIVITY");
-        int v = e ? std::atoi(e) : 100;
-        if (v < 25) v = 25;
-        if (v > 300) v = 300;
-        return float(v) / 100.0f;
-    }();
-    return s;
+    const char* e = std::getenv("NX_STICK_SENSITIVITY");
+    int v = e ? std::atoi(e) : 100;
+    if (v < 25) v = 25;
+    if (v > 300) v = 300;
+    return float(v) / 100.0f;
 }
 
 float camera_sens() {
-    static const float s = [] {
-        const char* e = std::getenv("NX_CAMERA_SENSITIVITY");
-        int v = e ? std::atoi(e) : 100;
-        if (v < 25) v = 25;
-        if (v > 300) v = 300;
-        return float(v) / 100.0f;
-    }();
-    return s;
+    const char* e = std::getenv("NX_CAMERA_SENSITIVITY");
+    int v = e ? std::atoi(e) : 100;
+    if (v < 25) v = 25;
+    if (v > 300) v = 300;
+    return float(v) / 100.0f;
 }
 
 constexpr std::array<uint64_t, 16> kGamepadButtonBits = {

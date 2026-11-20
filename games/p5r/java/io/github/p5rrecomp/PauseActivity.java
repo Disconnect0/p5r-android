@@ -28,6 +28,8 @@ import java.util.Map;
 
 /** Pause overlay for the native game; settings are saved for the next runtime start. */
 public final class PauseActivity extends Activity {
+    static { System.loadLibrary("p5r"); }
+
     static final int RED = Color.rgb(230, 18, 34);
     static final int YELLOW = Color.WHITE;
     static final int WHITE = Color.rgb(239, 241, 250);
@@ -62,6 +64,7 @@ public final class PauseActivity extends Activity {
             t("Interfaz", "Interface"), t("Juego", "Game"), t("Mandos", "Controllers")
     };
     LinearLayout settingsPanel;
+    ScrollView categoryScroll, optionScroll;
     Button resumeButton, quitButton, firstOptionButton;
     int selectedCategory;
 
@@ -184,9 +187,14 @@ public final class PauseActivity extends Activity {
         bodyParams.bottomMargin = dp(8);
         root.addView(body, bodyParams);
 
+        categoryScroll = new ScrollView(this);
+        categoryScroll.setVerticalScrollBarEnabled(true);
+        categoryScroll.setScrollbarFadingEnabled(false);
         LinearLayout side = new LinearLayout(this);
         side.setOrientation(LinearLayout.VERTICAL);
-        body.addView(side, new LinearLayout.LayoutParams(dp(210), LinearLayout.LayoutParams.MATCH_PARENT));
+        categoryScroll.addView(side, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+        body.addView(categoryScroll, new LinearLayout.LayoutParams(dp(210), LinearLayout.LayoutParams.MATCH_PARENT));
         settingsPanel = new LinearLayout(this);
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
         settingsPanel.setPadding(dp(22), dp(18), dp(22), dp(14));
@@ -211,6 +219,7 @@ public final class PauseActivity extends Activity {
                     selectedCategory = index;
                     refreshCategories();
                     showCategory();
+                    scrollCategoryIntoView(category);
                     focusFirstSetting();
                 }
             });
@@ -221,8 +230,8 @@ public final class PauseActivity extends Activity {
             categoryButtons.add(category);
         }
 
-        TextView hint = text(t("L1/R1: categorías  ·  ↑/↓: opciones  ·  A: seleccionar  ·  B: volver. Los cambios se aplican al próximo inicio.",
-                "L1/R1: categories  ·  ↑/↓: options  ·  A: select  ·  B: back. Changes apply next launch."), MUTED, 12, false);
+        TextView hint = text(t("L1/R1: categorías  ·  ↑/↓: opciones  ·  A: seleccionar  ·  B: volver. Mando, FPS y controles táctiles se aplican al instante.",
+                "L1/R1: categories  ·  ↑/↓: options  ·  A: select  ·  B: back. Gamepad, FPS and touch controls apply immediately."), MUTED, 12, false);
         hint.setPadding(dp(4), 0, 0, 0);
         root.addView(hint);
 
@@ -254,8 +263,8 @@ public final class PauseActivity extends Activity {
         accentParams.bottomMargin = dp(12);
         settingsPanel.addView(accent, accentParams);
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(false);
+        optionScroll = new ScrollView(this);
+        optionScroll.setFillViewport(false);
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
         verticalNavigation.clear();
@@ -290,8 +299,8 @@ public final class PauseActivity extends Activity {
         }
         if (categories[selectedCategory].equals(categories[5])) addGamepadMapperRow(rows);
         if (categories[selectedCategory].equals(categories[3])) addControlsPositionRow(rows);
-        scroll.addView(rows);
-        settingsPanel.addView(scroll, new LinearLayout.LayoutParams(
+        optionScroll.addView(rows);
+        settingsPanel.addView(optionScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
     }
 
@@ -345,6 +354,7 @@ public final class PauseActivity extends Activity {
         }
         if (persist()) {
             valueButton.setText(choiceLabel(choice));
+            applyRuntimeOption(choice.key);
             if ("NX_SHADOWS".equals(choice.key)) {
                 Button quality = optionButtons.get("NX_MALI_LOW_SHADOWS");
                 if (quality != null) {
@@ -375,6 +385,17 @@ public final class PauseActivity extends Activity {
         return saved;
     }
 
+    static native void updateRuntimeOption(String key, String value);
+
+    void applyRuntimeOption(String key) {
+        if ("NX_GAMEPAD_LAYOUT".equals(key) || "NX_GAMEPAD_MAP".equals(key)
+                || "NX_SHOW_FPS".equals(key) || key.startsWith("NX_TOUCH_")
+                || "NX_STICK_SENSITIVITY".equals(key) || "NX_CAMERA_SENSITIVITY".equals(key)) {
+            String value = config.get(key);
+            updateRuntimeOption(key, value == null ? "" : value);
+        }
+    }
+
     void showGamepadMapper(final int[] map) {
         String[] rows = new String[map.length];
         for (int i = 0; i < rows.length; i++) rows[i] = Lang.t(MAP_ACTIONS_ES[i], MAP_ACTIONS_EN[i])
@@ -391,7 +412,7 @@ public final class PauseActivity extends Activity {
                         if (!persist()) {
                             config.clear();
                             config.putAll(previous);
-                        }
+                        } else updateRuntimeOption(MAP_KEY, "");
                     }
                 })
                 .setNegativeButton(t("Cerrar", "Close"), null).create();
@@ -434,7 +455,10 @@ public final class PauseActivity extends Activity {
                     encoded.append(map[i]);
                 }
                 config.put(MAP_KEY, encoded.toString());
-                if (persist()) dialog.dismiss();
+                if (persist()) {
+                    updateRuntimeOption(MAP_KEY, encoded.toString());
+                    dialog.dismiss();
+                }
                 else {
                     System.arraycopy(previousMap, 0, map, 0, map.length);
                     config.clear();
@@ -506,7 +530,7 @@ public final class PauseActivity extends Activity {
 
     void returnToLauncher() {
         Intent i = new Intent(this, Launcher.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         startActivity(i);
         finish();
     }
@@ -521,6 +545,7 @@ public final class PauseActivity extends Activity {
                 selectedCategory = (selectedCategory + direction + categories.length) % categories.length;
                 refreshCategories();
                 showCategory();
+                scrollCategoryIntoView(categoryButtons.get(selectedCategory));
                 focusFirstSetting();
             }
             return true;
@@ -582,7 +607,34 @@ public final class PauseActivity extends Activity {
         int current = verticalNavigation.indexOf(getCurrentFocus());
         int next = current < 0 ? (direction > 0 ? 0 : verticalNavigation.size() - 1)
                 : (current + direction + verticalNavigation.size()) % verticalNavigation.size();
-        verticalNavigation.get(next).requestFocus();
+        final View target = verticalNavigation.get(next);
+        target.requestFocus();
+        if (optionScroll != null) target.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                target.getDrawingRect(rect);
+                optionScroll.offsetDescendantRectToMyCoords(target, rect);
+                int top = optionScroll.getScrollY();
+                int bottom = top + optionScroll.getHeight();
+                if (rect.top < top) optionScroll.smoothScrollTo(0, rect.top);
+                else if (rect.bottom > bottom) optionScroll.smoothScrollTo(0, rect.bottom - optionScroll.getHeight());
+            }
+        });
+    }
+
+    void scrollCategoryIntoView(final View target) {
+        if (categoryScroll == null) return;
+        target.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                target.getDrawingRect(rect);
+                categoryScroll.offsetDescendantRectToMyCoords(target, rect);
+                int top = categoryScroll.getScrollY();
+                int bottom = top + categoryScroll.getHeight();
+                if (rect.top < top) categoryScroll.smoothScrollTo(0, rect.top);
+                else if (rect.bottom > bottom) categoryScroll.smoothScrollTo(0, rect.bottom - categoryScroll.getHeight());
+            }
+        });
     }
 
     LinearLayout.LayoutParams buttonParams(int width, int height) {

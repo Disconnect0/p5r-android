@@ -121,9 +121,16 @@ int env_int(const char* name, int fallback) {
 }
 
 // The layout as the launcher set it (config.txt, which becomes the environment): NX_TOUCH_LAYOUT replaces the positions
-// and radii of the named buttons, NX_TOUCH_SIZE (50..160, percent) scales every radius. Read once.
+// and radii of the named buttons, NX_TOUCH_SIZE (50..160, percent) scales every radius. Rebuild when a setting changes.
 const std::vector<TouchButton>& buttons() {
-    static const std::vector<TouchButton> v = [] {
+    static thread_local std::string previous;
+    static thread_local std::vector<TouchButton> v;
+    const char* raw_layout = std::getenv("NX_TOUCH_LAYOUT");
+    const char* raw_size = std::getenv("NX_TOUCH_SIZE");
+    const std::string signature = std::string(raw_layout ? raw_layout : "") + "|" + (raw_size ? raw_size : "");
+    if (signature == previous) return v;
+    previous = signature;
+    v = [] {
         std::vector<TouchButton> out;
         const Layout* l = layout();
         if (!l) return out;
@@ -142,40 +149,29 @@ const std::vector<TouchButton>& buttons() {
 
 // NX_TOUCH_SHOW=0 (launcher: On-screen buttons off): nothing is drawn and touches are ignored.
 bool touch_enabled() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_TOUCH_SHOW");
-        return !(e && e[0] == '0');
-    }();
-    return on;
+    const char* e = std::getenv("NX_TOUCH_SHOW");
+    return !(e && e[0] == '0');
 }
 
 // NX_TOUCH_HIDE=1: on-screen controls are invisible (not drawn), but touch inputs continue to register.
 bool touch_hidden() {
-    static const bool h = [] {
-        const char* e_hide = std::getenv("NX_TOUCH_HIDE");
-        if (e_hide && e_hide[0] == '1') return true;
-        const char* e_show = std::getenv("NX_TOUCH_SHOW");
-        if (e_show && (e_show[0] == '2' || std::strcmp(e_show, "hide") == 0 || std::strcmp(e_show, "hidden") == 0)) return true;
-        const char* e_op = std::getenv("NX_TOUCH_OPACITY");
-        if (e_op && std::strcmp(e_op, "0") == 0) return true;
-        return false;
-    }();
-    return h;
+    const char* e_hide = std::getenv("NX_TOUCH_HIDE");
+    if (e_hide && e_hide[0] == '1') return true;
+    const char* e_show = std::getenv("NX_TOUCH_SHOW");
+    if (e_show && (e_show[0] == '2' || std::strcmp(e_show, "hide") == 0 || std::strcmp(e_show, "hidden") == 0)) return true;
+    const char* e_op = std::getenv("NX_TOUCH_OPACITY");
+    return e_op && std::strcmp(e_op, "0") == 0;
 }
 
 // NX_TOUCH_MIRROR=1 (left-handed): the stick takes the right half of the screen instead of the left.
 bool touch_mirrored() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_TOUCH_MIRROR");
-        return e && e[0] == '1';
-    }();
-    return on;
+    const char* e = std::getenv("NX_TOUCH_MIRROR");
+    return e && e[0] == '1';
 }
 
 // NX_TOUCH_OPACITY (10..100, default 85): the drawn buttons' brightness relative to the original look.
 float touch_opacity_scale() {
-    static const float s = float(std::clamp(env_int("NX_TOUCH_OPACITY", 85), 10, 100)) / 85.0f;
-    return s;
+    return float(std::clamp(env_int("NX_TOUCH_OPACITY", 85), 10, 100)) / 85.0f;
 }
 
 const TouchButton* touch_buttons(size_t& count) {
@@ -190,13 +186,10 @@ void touch_stick_rest(float& x, float& y, float& r) {
     struct Rest {
         float x, y, r;
     };
-    static const Rest rest = [] {
-        const Layout* l = layout();
-        Rest v{l ? l->stick_x : 0.15f, l ? l->stick_y : 0.72f, kStickRing};
-        if (touch_mirrored()) v.x = 1 - v.x;
-        layout_entry("STICK", v.x, v.y, v.r);
-        return v;
-    }();
+    const Layout* l = layout();
+    Rest rest{l ? l->stick_x : 0.15f, l ? l->stick_y : 0.72f, kStickRing};
+    if (touch_mirrored()) rest.x = 1 - rest.x;
+    layout_entry("STICK", rest.x, rest.y, rest.r);
     x = rest.x, y = rest.y, r = rest.r;
 }
 
