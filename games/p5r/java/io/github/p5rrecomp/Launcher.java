@@ -28,12 +28,14 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
+import android.widget.FrameLayout;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -403,27 +405,22 @@ public class Launcher extends Activity {
 
     void buildHome() {
         settingsVisible = false;
+        FrameLayout screen = new FrameLayout(this);
+        ImageView backdropImage = new ImageView(this);
+        int backdropId = getResources().getIdentifier("p5r_launcher_background", "drawable", getPackageName());
+        if (backdropId != 0) backdropImage.setImageResource(backdropId);
+        backdropImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        screen.addView(backdropImage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        View shade = new View(this);
+        shade.setBackgroundColor(Color.argb(48, 0, 0, 0));
+        screen.addView(shade, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(30), dp(20), dp(30), dp(20));
-        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[] {Color.rgb(48, 6, 13), Color.rgb(18, 7, 11), Color.rgb(5, 5, 8)});
-        root.setBackground(backdrop);
-
-        LinearLayout top = new LinearLayout(this);
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        TextView brandTag = new TextView(this);
-        brandTag.setText("P5R  •  ANDROID");
-        brandTag.setTextColor(Color.rgb(220, 188, 111));
-        brandTag.setTextSize(12);
-        brandTag.setTypeface(Typeface.DEFAULT_BOLD);
-        top.addView(brandTag, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        TextView version = new TextView(this);
-        version.setText("v0.5.15");
-        version.setTextColor(Color.rgb(210, 205, 205));
-        version.setTextSize(13);
-        top.addView(version);
-        root.addView(top);
+        root.setPadding(dp(24), dp(18), dp(24), dp(18));
+        root.setBackgroundColor(Color.TRANSPARENT);
 
         LinearLayout content = new LinearLayout(this);
         content.setGravity(Gravity.CENTER_VERTICAL);
@@ -496,11 +493,7 @@ public class Launcher extends Activity {
         LinearLayout statusCard = new LinearLayout(this);
         statusCard.setGravity(Gravity.CENTER_VERTICAL);
         statusCard.setPadding(dp(16), dp(10), dp(16), dp(10));
-        GradientDrawable statusBackground = new GradientDrawable();
-        statusBackground.setColor(Color.argb(210, 12, 10, 12));
-        statusBackground.setCornerRadius(dp(10));
-        statusBackground.setStroke(dp(1), Color.rgb(100, 72, 37));
-        statusCard.setBackground(statusBackground);
+        statusCard.setBackground(new MenuPanelDrawable(dp(4), false));
         TextView indicator = new TextView(this);
         indicator.setText("●");
         indicator.setTextColor(Color.rgb(220, 188, 111));
@@ -512,9 +505,31 @@ public class Launcher extends Activity {
         status.setMaxLines(2);
         status.setPadding(dp(10), 0, 0, 0);
         statusCard.addView(status, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(statusCard, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout footer = new LinearLayout(this);
+        footer.setOrientation(LinearLayout.HORIZONTAL);
+        footer.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout footerInfo = new LinearLayout(this);
+        footerInfo.setOrientation(LinearLayout.VERTICAL);
+        TextView version = new TextView(this);
+        version.setText("v0.5.16");
+        version.setTextColor(Color.WHITE);
+        version.setTextSize(15);
+        version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        version.setShadowLayer(dp(2), dp(1), dp(2), Color.BLACK);
+        LinearLayout.LayoutParams versionParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        versionParams.bottomMargin = dp(5);
+        footerInfo.addView(version, versionParams);
+        footerInfo.addView(statusCard, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        footer.addView(footerInfo, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f));
+        footer.addView(new View(this), new LinearLayout.LayoutParams(0, dp(1), 0.7f));
+        root.addView(footer, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        setContentView(root);
+        screen.addView(root, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(screen);
         focusWhenReady(play);
         refresh();
     }
@@ -542,27 +557,61 @@ public class Launcher extends Activity {
         button.setFocusableInTouchMode(true);
         button.setGravity(Gravity.CENTER);
         button.setPadding(dp(22), 0, dp(18), 0);
-        button.setTextColor(primary ? Color.rgb(30, 14, 14) : Color.WHITE);
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                primary ? new int[] {Color.rgb(244, 190, 70), Color.rgb(255, 225, 139)}
-                        : new int[] {Color.argb(220, 43, 27, 31), Color.argb(220, 19, 16, 20)});
-        background.setCornerRadius(dp(8));
-        background.setStroke(dp(1), primary ? Color.rgb(255, 226, 151) : Color.rgb(100, 69, 50));
-        button.setBackground(background);
+        button.setTextColor(Color.WHITE);
+        button.setBackground(new MenuPanelDrawable(dp(4), primary));
         button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View view, boolean focused) {
                 boolean highlighted = primary || focused;
-                GradientDrawable focusedBackground = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                        highlighted ? new int[] {Color.rgb(244, 190, 70), Color.rgb(255, 225, 139)}
-                                : new int[] {Color.argb(220, 43, 27, 31), Color.argb(220, 19, 16, 20)});
-                focusedBackground.setCornerRadius(dp(8));
-                focusedBackground.setStroke(dp(2), highlighted ? Color.rgb(255, 226, 151) : Color.rgb(100, 69, 50));
-                button.setTextColor(highlighted ? Color.rgb(30, 14, 14) : Color.WHITE);
-                button.setBackground(focusedBackground);
+                button.setTextColor(Color.WHITE);
+                button.setBackground(new MenuPanelDrawable(dp(4), highlighted));
             }
         });
         return button;
+    }
+
+    static final class MenuPanelDrawable extends android.graphics.drawable.Drawable {
+        final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        final int border;
+        final boolean selected;
+
+        MenuPanelDrawable(int border, boolean selected) {
+            this.border = border;
+            this.selected = selected;
+        }
+
+        void polygon(android.graphics.Canvas canvas, float left, float top, float right, float bottom,
+                float cut, int color) {
+            android.graphics.Path path = new android.graphics.Path();
+            path.moveTo(left + cut, top);
+            path.lineTo(right, top);
+            path.lineTo(right - cut, bottom);
+            path.lineTo(left, bottom);
+            path.close();
+            paint.setColor(color);
+            canvas.drawPath(path, paint);
+        }
+
+        @Override
+        public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect bounds = getBounds();
+            float width = bounds.width();
+            float height = bounds.height();
+            canvas.save();
+            canvas.translate(bounds.left, bounds.top);
+            float cut = Math.min(border * 4.5f, width * 0.13f);
+            polygon(canvas, 0, 0, width, height, cut,
+                    selected ? Color.rgb(238, 0, 28) : Color.rgb(156, 10, 23));
+            polygon(canvas, border, border, width - border, height - border,
+                    cut * 0.8f, Color.WHITE);
+            polygon(canvas, border * 2, border * 2, width - border * 2, height - border * 2,
+                    cut * 0.65f, Color.rgb(8, 7, 9));
+            canvas.restore();
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) { paint.setColorFilter(filter); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
 
     LinearLayout.LayoutParams menuButtonParams(int height, int topMargin) {

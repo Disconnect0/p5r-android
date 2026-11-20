@@ -103,7 +103,10 @@ if (Test-Path $java) {
     if ($LASTEXITCODE) { throw "javac failed" }
     $classes = @((Get-ChildItem "$out\classes" -Recurse -Filter *.class).FullName)
     $env:JAVA_HOME = $jdk
-    & "$bt\d8.bat" --release --min-api 29 --lib $jar --output "$out\dex" @classes
+    # Keep the Windows command line short: the launcher can contain many Java inner classes.
+    $classList = "$out\dex\classes.args"
+    [System.IO.File]::WriteAllLines($classList, $classes, [System.Text.UTF8Encoding]::new($false))
+    & "$bt\d8.bat" --release --min-api 29 --lib $jar --output "$out\dex" "@$classList"
     if ($LASTEXITCODE) { throw "d8 failed" }
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($apk, "$out\dex\classes.dex", "classes.dex", "Optimal") | Out-Null
 }
