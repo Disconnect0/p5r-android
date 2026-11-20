@@ -6,12 +6,14 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -397,32 +399,101 @@ public final class PauseActivity extends Activity {
     }
 
     void showGamepadMapper(final int[] map) {
-        String[] rows = new String[map.length];
-        for (int i = 0; i < rows.length; i++) rows[i] = Lang.t(MAP_ACTIONS_ES[i], MAP_ACTIONS_EN[i])
-                + "  ·  " + gamepadKeyName(map[i]);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(t("Asignar botones del mando", "Remap gamepad buttons"))
-                .setItems(rows, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) { captureGamepadButton(map, which); }
-                })
-                .setNeutralButton(t("Restaurar preset", "Restore preset"), new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
-                        Map<String, String> previous = new LinkedHashMap<>(config);
-                        config.remove(MAP_KEY);
-                        if (!persist()) {
-                            config.clear();
-                            config.putAll(previous);
-                        } else updateRuntimeOption(MAP_KEY, "");
-                    }
-                })
-                .setNegativeButton(t("Cerrar", "Close"), null).create();
+        final int[] selected = {0};
+        final List<Button> rows = new ArrayList<>();
+        final AlertDialog dialog = new AlertDialog.Builder(this).create();
+        LinearLayout card = dialogCard();
+        card.addView(text(t("ASIGNAR BOTONES DEL MANDO", "REMAP GAMEPAD BUTTONS"), YELLOW, 21, true));
+        card.addView(dialogAccent());
+        TextView description = text(t("Selecciona una acción y pulsa el botón que quieres asignar.",
+                "Select an action, then press the button to assign."), MUTED, 14, false);
+        LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(-1, -2);
+        descriptionParams.bottomMargin = dp(8);
+        card.addView(description, descriptionParams);
+
+        ScrollView listScroll = new ScrollView(this);
+        listScroll.setFillViewport(false);
+        listScroll.setVerticalScrollBarEnabled(true);
+        listScroll.setScrollbarFadingEnabled(false);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        final List<Button> navigation = new ArrayList<>();
+        for (int i = 0; i < map.length; i++) {
+            final int index = i;
+            Button row = actionButton(mapActionLabel(index, map[index]), i == selected[0]);
+            row.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            row.setPadding(dp(16), 0, dp(12), 0);
+            row.setTextSize(15);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    selected[0] = index;
+                    dialogCardFocus(rows, index);
+                    captureGamepadButton(map, index, new Runnable() {
+                        @Override public void run() {
+                            rows.get(index).setText(mapActionLabel(index, map[index]));
+                            dialogCardFocus(navigation, selected[0]);
+                        }
+                    });
+                }
+            });
+            rows.add(row);
+            navigation.add(row);
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(48));
+            rowParams.bottomMargin = dp(5);
+            list.addView(row, rowParams);
+        }
+        listScroll.addView(list);
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int listHeight = Math.max(dp(100), Math.min(dp(420), screenHeight - dp(240)));
+        card.addView(listScroll, new LinearLayout.LayoutParams(-1, listHeight));
+
+        LinearLayout footer = new LinearLayout(this);
+        footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        footer.setPadding(0, dp(10), 0, 0);
+        Button restore = actionButton(t("Restaurar preset", "Restore preset"), false);
+        restore.setTextSize(14);
+        Button close = actionButton(t("Cerrar", "Close"), false);
+        close.setTextSize(14);
+        LinearLayout.LayoutParams footerButton = new LinearLayout.LayoutParams(-2, dp(48));
+        footerButton.rightMargin = dp(8);
+        footer.addView(restore, footerButton);
+        footer.addView(close, new LinearLayout.LayoutParams(-2, dp(48)));
+        card.addView(footer);
+        navigation.add(restore);
+        navigation.add(close);
+
+        restore.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Map<String, String> previous = new LinkedHashMap<>(config);
+                config.remove(MAP_KEY);
+                if (!persist()) {
+                    config.clear();
+                    config.putAll(previous);
+                    return;
+                }
+                updateRuntimeOption(MAP_KEY, "");
+                int[] defaults = readGamepadMap();
+                System.arraycopy(defaults, 0, map, 0, map.length);
+                for (int i = 0; i < rows.size(); i++) rows.get(i).setText(mapActionLabel(i, map[i]));
+                dialogCardFocus(navigation, selected[0]);
+            }
+        });
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dialog.dismiss(); }
+        });
+        dialog.setView(card);
         dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
             @Override public boolean onKey(DialogInterface d, int key, KeyEvent event) {
                 if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return true;
+                if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
+                        || key == KeyEvent.KEYCODE_BUTTON_L1 || key == KeyEvent.KEYCODE_BUTTON_R1) {
+                    int direction = key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_BUTTON_L1 ? -1 : 1;
+                    selected[0] = (selected[0] + direction + navigation.size()) % navigation.size();
+                    dialogCardFocus(navigation, selected[0]);
+                    return true;
+                }
                 if (key == KeyEvent.KEYCODE_BUTTON_A) {
-                    int which = dialog.getListView().getSelectedItemPosition();
-                    if (which >= 0) dialog.getListView().performItemClick(
-                            dialog.getListView().getSelectedView(), which, dialog.getListView().getItemIdAtPosition(which));
+                    navigation.get(selected[0]).performClick();
                     return true;
                 }
                 if (key == KeyEvent.KEYCODE_BUTTON_B) { dialog.cancel(); return true; }
@@ -430,18 +501,74 @@ public final class PauseActivity extends Activity {
             }
         });
         dialog.show();
+        styleDialogWindow(dialog, 600, 690);
+        focusWhenReady(navigation.get(0));
     }
 
-    void captureGamepadButton(final int[] map, final int action) {
-        TextView prompt = text(t("Pulsa el botón que quieres asignar. Atrás cancela.",
-                "Press the button to assign. Back cancels."), WHITE, 18, false);
-        prompt.setPadding(dp(22), dp(18), dp(22), dp(18));
-        final AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(Lang.f("Asignar %s", "Assign %s", Lang.t(MAP_ACTIONS_ES[action], MAP_ACTIONS_EN[action])))
-                .setView(prompt).setNegativeButton(t("Cancelar", "Cancel"), null).create();
+    String mapActionLabel(int action, int key) {
+        return Lang.t(MAP_ACTIONS_ES[action], MAP_ACTIONS_EN[action]) + "   ·   " + gamepadKeyName(key);
+    }
+
+    LinearLayout dialogCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(20), dp(22), dp(18));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(8, 7, 9));
+        background.setCornerRadius(dp(5));
+        background.setStroke(dp(2), RED);
+        card.setBackground(background);
+        return card;
+    }
+
+    View dialogAccent() {
+        View accent = new View(this);
+        accent.setBackgroundColor(RED);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(72), dp(4));
+        params.topMargin = dp(9);
+        params.bottomMargin = dp(12);
+        accent.setLayoutParams(params);
+        return accent;
+    }
+
+    void dialogCardFocus(List<Button> rows, int selected) {
+        for (int i = 0; i < rows.size(); i++) {
+            rows.get(i).setTag(Boolean.valueOf(i == selected));
+            styleMenuButton(rows.get(i), i == selected || rows.get(i).hasFocus());
+        }
+        rows.get(selected).requestFocus();
+    }
+
+    void styleDialogWindow(AlertDialog dialog, int maxWidthDp, int maxHeightDp) {
+        Window window = dialog.getWindow();
+        if (window == null) return;
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        int width = Math.min(dp(maxWidthDp), getResources().getDisplayMetrics().widthPixels - dp(36));
+        int height = Math.min(dp(maxHeightDp), getResources().getDisplayMetrics().heightPixels - dp(36));
+        window.setLayout(width, height);
+    }
+
+    void captureGamepadButton(final int[] map, final int action, final Runnable onSaved) {
+        final AlertDialog dialog = new AlertDialog.Builder(this).create();
+        LinearLayout card = dialogCard();
+        card.addView(text(Lang.f("ASIGNAR %s", "ASSIGN %s", Lang.t(MAP_ACTIONS_ES[action], MAP_ACTIONS_EN[action])),
+                YELLOW, 21, true));
+        card.addView(dialogAccent());
+        TextView prompt = text(t("Pulsa el botón que quieres asignar.\nB o Atrás cancela.",
+                "Press the button to assign.\nB or Back cancels."), WHITE, 17, false);
+        prompt.setPadding(0, dp(10), 0, dp(20));
+        card.addView(prompt);
+        Button cancel = actionButton(t("Cancelar", "Cancel"), false);
+        cancel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dialog.cancel(); }
+        });
+        LinearLayout.LayoutParams cancelParams = new LinearLayout.LayoutParams(-1, dp(50));
+        card.addView(cancel, cancelParams);
+        dialog.setView(card);
         dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
             @Override public boolean onKey(DialogInterface d, int key, KeyEvent event) {
                 if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return true;
+                if (key == KeyEvent.KEYCODE_BUTTON_B) { dialog.cancel(); return true; }
                 if (key == KeyEvent.KEYCODE_BACK || !isGamepadKey(event, key)) return false;
                 int[] previousMap = map.clone();
                 Map<String, String> previousConfig = new LinkedHashMap<>(config);
@@ -458,6 +585,7 @@ public final class PauseActivity extends Activity {
                 if (persist()) {
                     updateRuntimeOption(MAP_KEY, encoded.toString());
                     dialog.dismiss();
+                    onSaved.run();
                 }
                 else {
                     System.arraycopy(previousMap, 0, map, 0, map.length);
@@ -468,6 +596,8 @@ public final class PauseActivity extends Activity {
             }
         });
         dialog.show();
+        styleDialogWindow(dialog, 500, 280);
+        focusWhenReady(cancel);
     }
 
     boolean isGamepadKey(KeyEvent event, int key) {
@@ -530,7 +660,7 @@ public final class PauseActivity extends Activity {
 
     void returnToLauncher() {
         Intent i = new Intent(this, Launcher.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(i);
         finish();
     }

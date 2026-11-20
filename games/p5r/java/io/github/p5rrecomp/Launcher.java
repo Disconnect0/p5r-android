@@ -939,7 +939,7 @@ public class Launcher extends Activity {
             else if (!prepared()) prepare();
             else if (openGameForRuntime()) {
                 save();
-                startActivity(new Intent(Launcher.this, GameActivity.class));
+                startGameActivity();
             } else {
                 tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
             }
@@ -954,7 +954,13 @@ public class Launcher extends Activity {
             return;
         }
         save();
-        startActivity(new Intent(Launcher.this, GameActivity.class));
+        startGameActivity();
+    }
+
+    void startGameActivity() {
+        Intent intent = new Intent(Launcher.this, GameActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        startActivity(intent);
     }
 
     @Override
