@@ -1319,6 +1319,7 @@ extern "C" void android_main(android_app* app) {
     // overriding a variable already set. Android defaults: handheld (720p, the lighter GPU load).
     {
         unsetenv("NX_STRETCH");
+        unsetenv("NX_GAMEPAD_MAP");  // the launcher may have restored the preset since the previous game session
         std::ifstream f(g_root + "/config.txt");
         std::string line;
         while (std::getline(f, line)) {

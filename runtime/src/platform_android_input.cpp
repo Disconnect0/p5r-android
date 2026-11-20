@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cmath>
@@ -57,6 +58,7 @@ namespace nx::plat {
 namespace {
 std::mutex g_in;
 PadState g_pad_buttons;  // controller state
+uint64_t g_motion_buttons = 0;  // d-pad and analog triggers, kept separate so custom mappings release cleanly
 enum Stick : uint8_t { kNoStick, kLeftStick, kRightStick };
 struct Touch {
     int32_t id;
@@ -83,11 +85,8 @@ uint64_t g_last_touch_ns = 0;  // the drawn controls dim after kTouchIdleNs with
 constexpr uint64_t kTouchIdleNs = 8'000'000'000;
 
 bool gamepad_swap_abxy() {
-    static const bool swap = [] {
-        const char* e = std::getenv("NX_GAMEPAD_LAYOUT");
-        return e && std::strcmp(e, "1") == 0;
-    }();
-    return swap;
+    const char* e = std::getenv("NX_GAMEPAD_LAYOUT");
+    return e && std::strcmp(e, "1") == 0;
 }
 
 float stick_sens() {
@@ -112,7 +111,76 @@ float camera_sens() {
     return s;
 }
 
-uint64_t key_to_button(int32_t k) {
+constexpr std::array<uint64_t, 16> kGamepadButtonBits = {
+    kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kStickL, kStickR,
+    kLeft, kUp, kRight, kDown
+};
+
+int32_t canonical_gamepad_key(int32_t k) {
+    switch (k) {
+        case AKEYCODE_BUTTON_1: return AKEYCODE_BUTTON_Y;
+        case AKEYCODE_BUTTON_2: return AKEYCODE_BUTTON_B;
+        case AKEYCODE_BUTTON_3: return AKEYCODE_BUTTON_A;
+        case AKEYCODE_BUTTON_4: return AKEYCODE_BUTTON_X;
+        case AKEYCODE_BUTTON_5: case AKEYCODE_BUTTON_C: return AKEYCODE_BUTTON_L2;
+        case AKEYCODE_BUTTON_6: case AKEYCODE_BUTTON_Z: return AKEYCODE_BUTTON_R2;
+        case AKEYCODE_BUTTON_7: return AKEYCODE_BUTTON_L1;
+        case AKEYCODE_BUTTON_8: return AKEYCODE_BUTTON_R1;
+        case AKEYCODE_BUTTON_9: return AKEYCODE_BUTTON_SELECT;
+        case AKEYCODE_BUTTON_10: case AKEYCODE_BUTTON_MODE: return AKEYCODE_BUTTON_START;
+        case AKEYCODE_BUTTON_11: return AKEYCODE_BUTTON_THUMBL;
+        case AKEYCODE_BUTTON_12: return AKEYCODE_BUTTON_THUMBR;
+        default: return k;
+    }
+}
+
+struct GamepadMap {
+    bool active = false;
+    std::array<int32_t, kGamepadButtonBits.size()> keys{};
+};
+
+const GamepadMap& gamepad_map() {
+    static std::string previous;
+    static GamepadMap map;
+    const char* value = std::getenv("NX_GAMEPAD_MAP");
+    const std::string current = value ? value : "";
+    if (current == previous) return map;
+    previous = current;
+    map = GamepadMap{};
+    if (current.empty()) return map;
+    const char* p = current.c_str();
+    for (size_t i = 0; i < map.keys.size(); i++) {
+        char* end = nullptr;
+        long key = std::strtol(p, &end, 10);
+        if (end == p || key <= AKEYCODE_UNKNOWN || key > 4096 || (i + 1 < map.keys.size() ? *end != ',' : *end != '\0')) {
+            map = GamepadMap{};
+            return map;
+        }
+        map.keys[i] = int32_t(key);
+        p = i + 1 < map.keys.size() ? end + 1 : end;
+    }
+    map.active = true;
+    return map;
+}
+
+bool known_gamepad_key(int32_t k) {
+    switch (k) {
+        case AKEYCODE_BUTTON_A: case AKEYCODE_BUTTON_B: case AKEYCODE_BUTTON_X: case AKEYCODE_BUTTON_Y:
+        case AKEYCODE_BUTTON_L1: case AKEYCODE_BUTTON_R1: case AKEYCODE_BUTTON_L2: case AKEYCODE_BUTTON_R2:
+        case AKEYCODE_BUTTON_C: case AKEYCODE_BUTTON_Z: case AKEYCODE_BUTTON_START: case AKEYCODE_BUTTON_SELECT:
+        case AKEYCODE_BUTTON_MODE: case AKEYCODE_BUTTON_THUMBL: case AKEYCODE_BUTTON_THUMBR:
+        case AKEYCODE_BUTTON_1: case AKEYCODE_BUTTON_2: case AKEYCODE_BUTTON_3: case AKEYCODE_BUTTON_4:
+        case AKEYCODE_BUTTON_5: case AKEYCODE_BUTTON_6: case AKEYCODE_BUTTON_7: case AKEYCODE_BUTTON_8:
+        case AKEYCODE_BUTTON_9: case AKEYCODE_BUTTON_10: case AKEYCODE_BUTTON_11: case AKEYCODE_BUTTON_12:
+        case AKEYCODE_DPAD_LEFT: case AKEYCODE_DPAD_UP: case AKEYCODE_DPAD_RIGHT: case AKEYCODE_DPAD_DOWN:
+        case AKEYCODE_BACK:
+            return true;
+        default:
+            return false;
+    }
+}
+
+uint64_t key_to_button_default(int32_t k) {
     if (gamepad_swap_abxy()) {
         switch (k) {
             case AKEYCODE_BUTTON_A:
@@ -164,6 +232,21 @@ uint64_t key_to_button(int32_t k) {
         case AKEYCODE_DPAD_DOWN: return kDown;
         case AKEYCODE_BACK: return kMinus;
         // A keyboard: Enter / Space confirm (A), Escape goes back (B). (Some tablets keep BUTTON_B for their stylus.)
+        case AKEYCODE_ENTER: case AKEYCODE_NUMPAD_ENTER: case AKEYCODE_SPACE: case AKEYCODE_DPAD_CENTER: return kA;
+        case AKEYCODE_ESCAPE: return kB;
+        default: return 0;
+    }
+}
+
+uint64_t key_to_button(int32_t k) {
+    const GamepadMap& map = gamepad_map();
+    if (!map.active) return key_to_button_default(k);
+    const int32_t canonical = canonical_gamepad_key(k);
+    for (size_t i = 0; i < map.keys.size(); i++)
+        if (canonical_gamepad_key(map.keys[i]) == canonical) return kGamepadButtonBits[i];
+    if (known_gamepad_key(k)) return 0;
+    // Keep keyboard confirmation/back usable even while a custom gamepad map is active.
+    switch (k) {
         case AKEYCODE_ENTER: case AKEYCODE_NUMPAD_ENTER: case AKEYCODE_SPACE: case AKEYCODE_DPAD_CENTER: return kA;
         case AKEYCODE_ESCAPE: return kB;
         default: return 0;
@@ -224,17 +307,31 @@ int32_t on_input(android_app*, AInputEvent* e) {
         g_pad_buttons.ry = ry;
         float hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0);
         float hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
-        g_pad_buttons.buttons &= ~(kLeft | kRight | kUp | kDown | kZL | kZR);
-        if (hx < -0.5f) g_pad_buttons.buttons |= kLeft;
-        if (hx > 0.5f) g_pad_buttons.buttons |= kRight;
-        if (hy < -0.5f) g_pad_buttons.buttons |= kUp;
-        if (hy > 0.5f) g_pad_buttons.buttons |= kDown;
-        if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0) > 0.4f ||
-            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0) > 0.4f)
-            g_pad_buttons.buttons |= kZL;
-        if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0) > 0.4f ||
-            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0) > 0.4f)
-            g_pad_buttons.buttons |= kZR;
+        uint64_t motion_buttons = 0;
+        if (gamepad_map().active) {
+            if (hx < -0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_LEFT);
+            if (hx > 0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_RIGHT);
+            if (hy < -0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_UP);
+            if (hy > 0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_DOWN);
+            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0) > 0.4f ||
+                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0) > 0.4f)
+                motion_buttons |= key_to_button(AKEYCODE_BUTTON_L2);
+            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0) > 0.4f ||
+                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0) > 0.4f)
+                motion_buttons |= key_to_button(AKEYCODE_BUTTON_R2);
+        } else {
+            if (hx < -0.5f) motion_buttons |= kLeft;
+            if (hx > 0.5f) motion_buttons |= kRight;
+            if (hy < -0.5f) motion_buttons |= kUp;
+            if (hy > 0.5f) motion_buttons |= kDown;
+            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0) > 0.4f ||
+                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0) > 0.4f)
+                motion_buttons |= kZL;
+            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0) > 0.4f ||
+                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0) > 0.4f)
+                motion_buttons |= kZR;
+        }
+        g_motion_buttons = motion_buttons;
         return 1;
     }
     if ((src & AINPUT_SOURCE_TOUCHSCREEN) != AINPUT_SOURCE_TOUCHSCREEN) return 0;
@@ -312,7 +409,7 @@ bool headless() {  // NX_HEADLESS (platform.h)
 
 void read_pad(PadState& p) {
     std::lock_guard lk(g_in);
-    p.buttons |= g_pad_buttons.buttons;
+    p.buttons |= g_pad_buttons.buttons | g_motion_buttons;
     if (g_pad_buttons.lx || g_pad_buttons.ly) {
         p.lx = g_pad_buttons.lx;
         p.ly = g_pad_buttons.ly;

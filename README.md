@@ -45,7 +45,9 @@ placed in `Internal storage/Persona 5 Royal/mods/<ModName>/romfs/...` (see [docs
 ### Options
 
 Text language, resolution (360p, 480p, 720p, or 1080p), interface resolution, graphics (texture detail), frame rate
-cap (30, or 60 experimental), shadows, FPS counter, **Fullscreen (stretch)**, **Crowd NPCs** (toggle off to boost FPS in busy areas like Shibuya), **Post-processing / Bloom** (toggle off for lighter GPU load), **Touch controls** (show, size, opacity, L3/R3 buttons, and custom layout editor), **Touch stick & camera sensitivity** (50% to 250%), **Physical gamepad layout** (Nintendo vs Xbox/Android A/B and X/Y swap), **Import CPK** (for fan translations / language packs), and **Export logs** (generate and share debug logs directly from the device).
+cap (30, or 60 experimental), shadows, FPS counter, **Fullscreen (stretch)**, **Crowd NPCs** (toggle off to boost FPS in busy areas like Shibuya), **Post-processing / Bloom** (toggle off for lighter GPU load), **Touch controls** (show, size, opacity, L3/R3 buttons, and custom layout editor), **Touch stick & camera sensitivity** (50% to 250%), **Physical gamepad layout** (Nintendo vs Xbox/Android A/B and X/Y swap) and **per-button gamepad remapping** (press a game action, then the physical button to bind; restore the selected layout preset at any time), **Import CPK** (for fan translations / language packs), and **Export logs** (generate and share debug logs directly from the device).
+
+The home screen has **Play**, **Settings**, and **Quit**. All current configuration and maintenance controls are grouped under **Settings**.
 
 ## Requirements
 
@@ -143,6 +145,9 @@ móvil o tablet arm64. **No hace falta PC.** El APK no lleva nada del juego: lo 
 5. Pulsa **Preparar el juego** y deja la app abierta: comprueba el juego y traduce sus shaders (unos dos minutos, una
    sola vez).
 6. Pulsa **Jugar**.
+
+En las opciones, pulsa **Asignar botones del mando → Configurar**, elige una acción y presiona el botón físico que
+quieres asociar. **Restaurar preset** vuelve al esquema Nintendo o Xbox / PC seleccionado.
 
 No borres ni muevas el archivo del juego: cada vez que juegas se lee de ahí. Puedes poner mods (estilo LayeredFS) en
 `Almacenamiento interno/Persona 5 Royal/mods/<Nombre>/romfs/...` (ver [docs/MODS.md](docs/MODS.md)). En **Icono → Elegir

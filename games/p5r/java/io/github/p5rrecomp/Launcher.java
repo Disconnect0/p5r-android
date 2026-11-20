@@ -14,6 +14,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Build;
@@ -23,7 +24,13 @@ import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.system.Os;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.view.Gravity;
+import android.view.InputDevice;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -94,7 +101,13 @@ public class Launcher extends Activity {
     final Map<String, String> config = new LinkedHashMap<>();
     TextView status;
     Button play;
+    boolean settingsVisible;
     static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
+    static final String GAMEPAD_MAP_KEY = "NX_GAMEPAD_MAP";
+    static final String[] GAMEPAD_ACTIONS = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "−", "L3", "R3",
+            "D-pad izquierda", "D-pad arriba", "D-pad derecha", "D-pad abajo"};
+    static final String[] GAMEPAD_ACTIONS_EN = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "−", "L3", "R3",
+            "D-pad left", "D-pad up", "D-pad right", "D-pad down"};
 
     String t(String spanish, String english) { return Lang.t(spanish, english); }
 
@@ -385,24 +398,177 @@ public class Launcher extends Activity {
     }
 
     void build() {
+        buildHome();
+    }
+
+    void buildHome() {
+        settingsVisible = false;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(30), dp(20), dp(30), dp(20));
+        GradientDrawable backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[] {Color.rgb(48, 6, 13), Color.rgb(18, 7, 11), Color.rgb(5, 5, 8)});
+        root.setBackground(backdrop);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView brandTag = new TextView(this);
+        brandTag.setText("P5R  •  ANDROID");
+        brandTag.setTextColor(Color.rgb(220, 188, 111));
+        brandTag.setTextSize(12);
+        brandTag.setTypeface(Typeface.DEFAULT_BOLD);
+        top.addView(brandTag, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        TextView version = new TextView(this);
+        version.setText("v0.5.14");
+        version.setTextColor(Color.rgb(210, 205, 205));
+        version.setTextSize(13);
+        top.addView(version);
+        root.addView(top);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setGravity(Gravity.CENTER_VERTICAL);
+        content.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams contentParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1);
+        contentParams.topMargin = dp(8);
+        contentParams.bottomMargin = dp(8);
+        root.addView(content, contentParams);
+
+        LinearLayout hero = new LinearLayout(this);
+        hero.setGravity(Gravity.CENTER_VERTICAL);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 1.2f);
+        heroParams.rightMargin = dp(28);
+        content.addView(hero, heroParams);
+        TextView title = new TextView(this);
+        SpannableString logo = new SpannableString("PERSONA 5\nROYAL");
+        logo.setSpan(new ForegroundColorSpan(Color.rgb(230, 18, 34)), 8, 9, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        title.setText(logo);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(48);
+        title.setLineSpacing(-dp(5), 1.0f);
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        hero.addView(title);
+        View accent = new View(this);
+        accent.setBackgroundColor(Color.rgb(224, 18, 34));
+        LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(84), dp(4));
+        accentParams.topMargin = dp(15);
+        hero.addView(accent, accentParams);
+        TextView subtitle = new TextView(this);
+        subtitle.setText(t("PORT NATIVO PARA ANDROID", "NATIVE ANDROID PORT"));
+        subtitle.setTextColor(Color.rgb(220, 188, 111));
+        subtitle.setTextSize(13);
+        subtitle.setLetterSpacing(0.12f);
+        subtitle.setPadding(0, dp(12), 0, 0);
+        hero.addView(subtitle);
+
+        LinearLayout menu = new LinearLayout(this);
+        menu.setGravity(Gravity.CENTER_VERTICAL);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        content.addView(menu, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f));
+        play = menuButton(t("Jugar", "Play"), true);
+        menu.addView(play, menuButtonParams(68, 10));
+        play.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startGame();
+            }
+        });
+        Button settings = menuButton(t("Ajustes", "Settings"), false);
+        menu.addView(settings, menuButtonParams(62, 10));
+        settings.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                buildSettings();
+            }
+        });
+        Button quit = menuButton(t("Salir", "Quit"), false);
+        menu.addView(quit, menuButtonParams(62, 10));
+        quit.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                finishAffinity();
+            }
+        });
+
+        LinearLayout statusCard = new LinearLayout(this);
+        statusCard.setGravity(Gravity.CENTER_VERTICAL);
+        statusCard.setPadding(dp(16), dp(10), dp(16), dp(10));
+        GradientDrawable statusBackground = new GradientDrawable();
+        statusBackground.setColor(Color.argb(210, 12, 10, 12));
+        statusBackground.setCornerRadius(dp(10));
+        statusBackground.setStroke(dp(1), Color.rgb(100, 72, 37));
+        statusCard.setBackground(statusBackground);
+        TextView indicator = new TextView(this);
+        indicator.setText("●");
+        indicator.setTextColor(Color.rgb(220, 188, 111));
+        indicator.setTextSize(17);
+        statusCard.addView(indicator);
+        status = new TextView(this);
+        status.setTextColor(Color.rgb(235, 231, 225));
+        status.setTextSize(14);
+        status.setMaxLines(2);
+        status.setPadding(dp(10), 0, 0, 0);
+        statusCard.addView(status, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(statusCard, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        setContentView(root);
+        refresh();
+    }
+
+    Button menuButton(String text, boolean primary) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setTextSize(21);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        button.setPadding(dp(22), 0, dp(18), 0);
+        button.setTextColor(primary ? Color.rgb(30, 14, 14) : Color.WHITE);
+        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                primary ? new int[] {Color.rgb(244, 190, 70), Color.rgb(255, 225, 139)}
+                        : new int[] {Color.argb(220, 43, 27, 31), Color.argb(220, 19, 16, 20)});
+        background.setCornerRadius(dp(8));
+        background.setStroke(dp(1), primary ? Color.rgb(255, 226, 151) : Color.rgb(100, 69, 50));
+        button.setBackground(background);
+        return button;
+    }
+
+    LinearLayout.LayoutParams menuButtonParams(int height, int topMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(height));
+        params.topMargin = dp(topMargin);
+        return params;
+    }
+
+    void buildSettings() {
+        settingsVisible = true;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(20, 4, 6));
         int pad = dp(24);
         root.setPadding(pad, pad, pad, pad);
 
+        Button back = new Button(this);
+        back.setText(t("← Inicio", "← Home"));
+        back.setAllCaps(false);
+        back.setTextColor(Color.rgb(220, 188, 111));
+        back.setBackgroundColor(Color.TRANSPARENT);
+        back.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        root.addView(back, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        back.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                buildHome();
+            }
+        });
+
         TextView title = new TextView(this);
-        title.setText("PERSONA 5 ROYAL");
+        title.setText(t("AJUSTES", "SETTINGS"));
         title.setTextColor(Color.rgb(230, 0, 18));
         title.setTextSize(30);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
-
-        status = new TextView(this);
-        status.setTextColor(Color.rgb(220, 220, 220));
-        status.setTextSize(14);
-        status.setPadding(0, dp(6), 0, dp(14));
-        root.addView(status);
 
         addRow(root, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"), t("Elegir", "Choose"),
                 new View.OnClickListener() {
@@ -450,6 +616,14 @@ public class Launcher extends Activity {
             value.setTag(o);
             root.addView(row);
         }
+
+        addRow(root, t("Asignar botones del mando", "Remap gamepad buttons"), t("Configurar", "Configure"),
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        openGamepadMapper();
+                    }
+                });
 
         LinearLayout edit = new LinearLayout(this);
         edit.setOrientation(LinearLayout.HORIZONTAL);
@@ -604,49 +778,47 @@ public class Launcher extends Activity {
         });
         root.addView(logsRow);
 
-        play = new Button(this);
-        play.setTextSize(20);
-        play.setAllCaps(false);
-        play.setBackgroundColor(Color.rgb(230, 0, 18));
-        play.setTextColor(Color.WHITE);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64));
-        lp.topMargin = dp(18);
-        root.addView(play, lp);
-        play.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!hasAccess()) {
-                    askAccess();
-                    return;
-                }
-                if (gameUri() != null) {  // the game file the player picked
-                    if (!gameReadable()) pick(PICK_GAME, "*/*", false);
-                    else if (!hasKeys()) pick(PICK_KEYS, "*/*", true);
-                    else if (!prepared()) prepare();
-                    else if (openGameForRuntime()) {
-                        save();
-                        startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
-                    } else {
-                        tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
-                    }
-                    return;
-                }
-                if (!hasData()) {
-                    pick(PICK_GAME, "*/*", false);
-                    return;
-                }
-                if (wrongBuild() != null) {
-                    refresh();
-                    return;
-                }
-                save();
-                startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
-            }
-        });
-
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
         setContentView(scroll);
+    }
+
+    void startGame() {
+        if (!hasAccess()) {
+            askAccess();
+            return;
+        }
+        if (gameUri() != null) {
+            if (!gameReadable()) pick(PICK_GAME, "*/*", false);
+            else if (!hasKeys()) pick(PICK_KEYS, "*/*", true);
+            else if (!prepared()) prepare();
+            else if (openGameForRuntime()) {
+                save();
+                startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+            } else {
+                tell(t("No se pudo abrir el juego", "The game could not be opened"), gameName());
+            }
+            return;
+        }
+        if (!hasData()) {
+            pick(PICK_GAME, "*/*", false);
+            return;
+        }
+        if (wrongBuild() != null) {
+            refresh();
+            return;
+        }
+        save();
+        startActivity(new Intent(Launcher.this, android.app.NativeActivity.class));
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (settingsVisible) {
+            buildHome();
+            return;
+        }
+        super.onBackPressed();
     }
 
     void refresh() {
@@ -667,37 +839,30 @@ public class Launcher extends Activity {
                 if (o.values[k].equals(v)) o.pick = k;
         }
         updateButtons(getWindow().getDecorView());
+        play.setText(t("Jugar", "Play"));
         if (!hasAccess()) {
             status.setText(t("Hace falta el permiso de acceso a todos los archivos para leer los datos del juego.",
                     "All-files access is needed to read the game data."));
-            play.setText(t("Dar permiso", "Grant access"));
         } else if (gameUri() != null && !gameReadable()) {
             status.setText(Lang.f("Ya no se puede leer el archivo del juego (%s): vuelve a elegirlo.",
                     "The game file can no longer be read (%s): choose it again.", gameName()));
-            play.setText(t("Elegir el juego", "Choose the game"));
         } else if (gameUri() != null && !hasKeys()) {
             status.setText(t("Falta tu archivo prod.keys.", "Your prod.keys file is missing."));
-            play.setText(t("Elegir prod.keys", "Choose prod.keys"));
         } else if (gameUri() != null && !prepared()) {
             status.setText(Lang.f("Juego: %s. Falta prepararlo: solo una vez, unos minutos.",
                     "Game: %s. It needs preparing: once, a few minutes.", gameName()));
-            play.setText(t("Preparar el juego", "Prepare the game"));
         } else if (gameUri() != null) {
             status.setText(Lang.f("Juego listo: %s", "Game ready: %s", gameName()));
-            play.setText(t("Jugar", "Play"));
         } else if (!hasData()) {
             status.setText(t("Elige el archivo de tu juego (.nsp o .xci de Persona 5 Royal 1.0.0) y tu prod.keys.",
                     "Choose your game file (a Persona 5 Royal 1.0.0 .nsp or .xci) and your prod.keys."));
-            play.setText(t("Elegir el juego", "Choose the game"));
         } else if (wrongBuild() != null) {
             status.setText(Lang.f("Almacenamiento interno/%s/exefs/main no es Persona 5 Royal 1.0.0 (build %s). Copia el "
                             + "exefs del juego base, sin la actualización.",
                     "Internal storage/%s/exefs/main is not Persona 5 Royal 1.0.0 (build %s). Copy the exefs of the base "
                             + "game, without the update.", DATA, wrongBuild()));
-            play.setText(t("Volver a buscar", "Look again"));
         } else {
             status.setText(Lang.f("Datos listos: %s", "Data ready: %s", dataDir().getPath()));
-            play.setText(t("Jugar", "Play"));
         }
     }
 
@@ -719,6 +884,200 @@ public class Launcher extends Activity {
             android.view.ViewGroup g = (android.view.ViewGroup) v;
             for (int k = 0; k < g.getChildCount(); k++) updateButtons(g.getChildAt(k));
         }
+    }
+
+    static int canonicalGamepadKey(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_BUTTON_1: return KeyEvent.KEYCODE_BUTTON_Y;
+            case KeyEvent.KEYCODE_BUTTON_2: return KeyEvent.KEYCODE_BUTTON_B;
+            case KeyEvent.KEYCODE_BUTTON_3: return KeyEvent.KEYCODE_BUTTON_A;
+            case KeyEvent.KEYCODE_BUTTON_4: return KeyEvent.KEYCODE_BUTTON_X;
+            case KeyEvent.KEYCODE_BUTTON_5:
+            case KeyEvent.KEYCODE_BUTTON_C: return KeyEvent.KEYCODE_BUTTON_L2;
+            case KeyEvent.KEYCODE_BUTTON_6:
+            case KeyEvent.KEYCODE_BUTTON_Z: return KeyEvent.KEYCODE_BUTTON_R2;
+            case KeyEvent.KEYCODE_BUTTON_7: return KeyEvent.KEYCODE_BUTTON_L1;
+            case KeyEvent.KEYCODE_BUTTON_8: return KeyEvent.KEYCODE_BUTTON_R1;
+            case KeyEvent.KEYCODE_BUTTON_9: return KeyEvent.KEYCODE_BUTTON_SELECT;
+            case KeyEvent.KEYCODE_BUTTON_10:
+            case KeyEvent.KEYCODE_BUTTON_MODE: return KeyEvent.KEYCODE_BUTTON_START;
+            case KeyEvent.KEYCODE_BUTTON_11: return KeyEvent.KEYCODE_BUTTON_THUMBL;
+            case KeyEvent.KEYCODE_BUTTON_12: return KeyEvent.KEYCODE_BUTTON_THUMBR;
+            default: return keyCode;
+        }
+    }
+
+    int[] defaultGamepadMap() {
+        Option layout = findOption("NX_GAMEPAD_LAYOUT");
+        boolean xbox = layout != null && layout.pick == 1;
+        return new int[] {
+                xbox ? KeyEvent.KEYCODE_BUTTON_A : KeyEvent.KEYCODE_BUTTON_B,
+                xbox ? KeyEvent.KEYCODE_BUTTON_B : KeyEvent.KEYCODE_BUTTON_A,
+                xbox ? KeyEvent.KEYCODE_BUTTON_X : KeyEvent.KEYCODE_BUTTON_Y,
+                xbox ? KeyEvent.KEYCODE_BUTTON_Y : KeyEvent.KEYCODE_BUTTON_X,
+                KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
+                KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_R2,
+                KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
+                KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR,
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN
+        };
+    }
+
+    int[] readGamepadMap() {
+        String saved = config.get(GAMEPAD_MAP_KEY);
+        if (saved != null) {
+            String[] fields = saved.split(",", -1);
+            if (fields.length == GAMEPAD_ACTIONS.length) {
+                int[] map = new int[fields.length];
+                boolean valid = true;
+                for (int i = 0; i < fields.length; i++) {
+                    try {
+                        map[i] = canonicalGamepadKey(Integer.parseInt(fields[i]));
+                        if (map[i] <= KeyEvent.KEYCODE_UNKNOWN) valid = false;
+                        for (int j = 0; j < i; j++) if (map[i] == map[j]) valid = false;
+                    } catch (NumberFormatException e) {
+                        valid = false;
+                    }
+                }
+                if (valid) return map;
+            }
+        }
+        return defaultGamepadMap();
+    }
+
+    String encodeGamepadMap(int[] map) {
+        StringBuilder encoded = new StringBuilder();
+        for (int i = 0; i < map.length; i++) {
+            if (i != 0) encoded.append(',');
+            encoded.append(map[i]);
+        }
+        return encoded.toString();
+    }
+
+    String gamepadKeyName(int keyCode) {
+        String name = KeyEvent.keyCodeToString(keyCode);
+        return name.replace("KEYCODE_BUTTON_", "").replace("KEYCODE_DPAD_", "D-pad ").replace("KEYCODE_", "");
+    }
+
+    void openGamepadMapper() {
+        if (!hasAccess()) {
+            askAccess();
+            return;
+        }
+        load();
+        showGamepadMapper(readGamepadMap());
+    }
+
+    void showGamepadMapper(final int[] map) {
+        String[] rows = new String[GAMEPAD_ACTIONS.length];
+        for (int i = 0; i < rows.length; i++)
+            rows[i] = t(GAMEPAD_ACTIONS[i], GAMEPAD_ACTIONS_EN[i]) + "  ·  " + gamepadKeyName(map[i]);
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(t("Asignar botones del mando", "Remap gamepad buttons"))
+                .setItems(rows, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        captureGamepadButton(map, which);
+                    }
+                })
+                .setNeutralButton(t("Restaurar preset", "Restore preset"), new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        load();
+                        config.remove(GAMEPAD_MAP_KEY);
+                        if (!writeConfig(new File(dataDir(), "config.txt"), config)) {
+                            tell(t("No se pudo guardar", "Could not save"),
+                                    t("No se pudieron restaurar los botones.", "The gamepad buttons could not be restored."));
+                            return;
+                        }
+                        Toast.makeText(Launcher.this, t("Preset del mando restaurado", "Gamepad preset restored"),
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(t("Cerrar", "Close"), null)
+                .create();
+        dialog.show();
+    }
+
+    boolean isGamepadKey(KeyEvent event, int keyCode) {
+        if (KeyEvent.isGamepadButton(keyCode)) return true;
+        int sources = event.getSource();
+        InputDevice device = event.getDevice();
+        if (device != null) sources |= device.getSources();
+        return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                || (sources & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD;
+    }
+
+    void captureGamepadButton(final int[] map, final int action) {
+        final TextView prompt = new TextView(this);
+        prompt.setText(t("Pulsa el botón físico que quieres asignar. Toca Cancelar para salir.",
+                "Press the physical button to assign. Tap Cancel to exit."));
+        prompt.setTextSize(18);
+        prompt.setPadding(dp(24), dp(20), dp(24), dp(20));
+        prompt.setFocusableInTouchMode(true);
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(Lang.f("Asignar %s", "Assign %s", t(GAMEPAD_ACTIONS[action], GAMEPAD_ACTIONS_EN[action])))
+                .setView(prompt)
+                .setNegativeButton(t("Cancelar", "Cancel"), null)
+                .create();
+        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            @Override
+            public boolean onKey(DialogInterface d, int keyCode, KeyEvent event) {
+                if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return true;
+                if (keyCode == KeyEvent.KEYCODE_BACK || !isGamepadKey(event, keyCode)) return false;
+                finishGamepadCapture(map, action, keyCode, dialog);
+                return true;
+            }
+        });
+        prompt.setOnGenericMotionListener(new View.OnGenericMotionListener() {
+            @Override
+            public boolean onGenericMotion(View view, MotionEvent event) {
+                int sources = event.getSource();
+                if ((sources & InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK) return false;
+                int keyCode = 0;
+                if (event.getAxisValue(MotionEvent.AXIS_HAT_X) < -0.5f) keyCode = KeyEvent.KEYCODE_DPAD_LEFT;
+                else if (event.getAxisValue(MotionEvent.AXIS_HAT_X) > 0.5f) keyCode = KeyEvent.KEYCODE_DPAD_RIGHT;
+                else if (event.getAxisValue(MotionEvent.AXIS_HAT_Y) < -0.5f) keyCode = KeyEvent.KEYCODE_DPAD_UP;
+                else if (event.getAxisValue(MotionEvent.AXIS_HAT_Y) > 0.5f) keyCode = KeyEvent.KEYCODE_DPAD_DOWN;
+                else if (event.getAxisValue(MotionEvent.AXIS_LTRIGGER) > 0.5f
+                        || event.getAxisValue(MotionEvent.AXIS_BRAKE) > 0.5f)
+                    keyCode = KeyEvent.KEYCODE_BUTTON_L2;
+                else if (event.getAxisValue(MotionEvent.AXIS_RTRIGGER) > 0.5f
+                        || event.getAxisValue(MotionEvent.AXIS_GAS) > 0.5f)
+                    keyCode = KeyEvent.KEYCODE_BUTTON_R2;
+                if (keyCode == 0) return false;
+                finishGamepadCapture(map, action, keyCode, dialog);
+                return true;
+            }
+        });
+        dialog.show();
+        prompt.requestFocus();
+    }
+
+    void finishGamepadCapture(final int[] map, int action, int keyCode, AlertDialog dialog) {
+        keyCode = canonicalGamepadKey(keyCode);
+        int oldKey = map[action];
+        for (int i = 0; i < map.length; i++)
+            if (i != action && map[i] == keyCode) map[i] = oldKey;
+        map[action] = keyCode;
+        load();
+        config.put(GAMEPAD_MAP_KEY, encodeGamepadMap(map));
+        final boolean saved = writeConfig(new File(dataDir(), "config.txt"), config);
+        dialog.dismiss();
+        if (!saved) {
+            tell(t("No se pudo guardar", "Could not save"),
+                    t("La asignación del mando no se pudo guardar.", "The gamepad mapping could not be saved."));
+            return;
+        }
+        Toast.makeText(this, Lang.f("%s asignado a %s", "%s mapped to %s",
+                t(GAMEPAD_ACTIONS[action], GAMEPAD_ACTIONS_EN[action]), gamepadKeyName(keyCode)), Toast.LENGTH_SHORT).show();
+        getWindow().getDecorView().post(new Runnable() {
+            @Override
+            public void run() {
+                showGamepadMapper(map);
+            }
+        });
     }
 
     void tell(String title, String message) {
