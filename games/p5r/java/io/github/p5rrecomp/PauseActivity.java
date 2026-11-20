@@ -86,6 +86,8 @@ public final class PauseActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         loadOptions();
         config.putAll(Launcher.readConfig(new File(Launcher.dataDir(), "config.txt")));
+        if (!config.containsKey("NX_HUD_RES"))
+            config.put("NX_HUD_RES", "1".equals(config.get("NX_HUD_1080")) ? "1080p" : "720p");
         buildScreen();
     }
 
@@ -101,8 +103,12 @@ public final class PauseActivity extends Activity {
                 new String[] {"0", "1"}, new String[] {"Desactivada", "Automática · más campo de visión"},
                 new String[] {"Off", "Auto · wider field of view"}));
         choices.add(toggle(categories[0], "NX_FSR", "Superresolución FSR", "FSR super resolution", false));
-        choices.add(new Choice(categories[0], "NX_HUD_1080", "Interfaz", "Interface", new String[] {"0", "1"},
-                new String[] {"720p · más rápida", "1080p · textos nítidos"}, new String[] {"720p · faster", "1080p · sharper text"}));
+        choices.add(new Choice(categories[0], "NX_HUD_RES", "Resolución de interfaz", "Interface resolution",
+                new String[] {"360p", "480p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p · Experimental", "2160p · Experimental", "Nativa del teléfono · Experimental"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p · Experimental", "2160p · Experimental", "Phone native · Experimental"}));
+        choices.add(new Choice(categories[0], "NX_UW_STRETCH_UI", "Interfaz Hor+", "Hor+ interface", new String[] {"0", "1"},
+                new String[] {"Centrada en 16:9", "Pantalla completa"}, new String[] {"Centered 16:9", "Full width"}));
 
         choices.add(new Choice(categories[1], "GRAPHICS", "Calidad de gráficos", "Graphics quality",
                 new String[] {"low", "medium", "high"}, new String[] {"Bajos", "Medios", "Altos"},
@@ -127,6 +133,12 @@ public final class PauseActivity extends Activity {
                 new String[] {"Enabled", "Disabled · more FPS"}));
 
         choices.add(toggle(categories[3], "NX_SHOW_FPS", "Contador de FPS", "FPS counter", false));
+        choices.add(metric("NX_FPS_SHOW_GPU", "Controlador gráfico", "GPU driver"));
+        choices.add(metric("NX_FPS_SHOW_BATTERY_TEMP", "Temperatura de batería", "Battery temperature"));
+        choices.add(metric("NX_FPS_SHOW_CPU_TEMP", "Temperatura de CPU", "CPU temperature"));
+        choices.add(metric("NX_FPS_SHOW_CPU", "Uso del procesador", "CPU usage"));
+        choices.add(metric("NX_FPS_SHOW_RAM", "Uso de RAM", "RAM usage"));
+        choices.add(metric("NX_FPS_SHOW_GPU_LOAD", "Uso de GPU", "GPU usage"));
         choices.add(new Choice(categories[3], "NX_TOUCH_SHOW", "Controles táctiles", "Touch controls",
                 new String[] {"1", "0"}, new String[] {"Activados", "Desactivados"}, new String[] {"On", "Off"}));
         choices.add(toggle(categories[3], "NX_TOUCH_HIDE", "Ocultar controles táctiles", "Hide touch controls", false));
@@ -381,7 +393,8 @@ public final class PauseActivity extends Activity {
                 }
             }
             applyRuntimeOption(choice.key);
-            if ("NX_ULTRAWIDE".equals(choice.key) || "NX_MAX_ANISO".equals(choice.key))
+            if ("NX_ULTRAWIDE".equals(choice.key) || "NX_MAX_ANISO".equals(choice.key)
+                    || "NX_HUD_RES".equals(choice.key) || "NX_UW_STRETCH_UI".equals(choice.key))
                 Toast.makeText(this, t("Este ajuste se aplica al iniciar el juego.",
                         "This setting takes effect the next time the game starts."), Toast.LENGTH_SHORT).show();
             if ("NX_SHADOWS".equals(choice.key)) {
@@ -408,6 +421,7 @@ public final class PauseActivity extends Activity {
     boolean persist() {
         File dir = Launcher.dataDir();
         if (!dir.exists()) dir.mkdirs();
+        config.put("NX_HUD_1080", "720p".equals(config.get("NX_HUD_RES")) ? "0" : "1");
         boolean saved = Launcher.writeConfig(new File(dir, "config.txt"), config);
         if (!saved) Toast.makeText(this, t("No se pudo guardar la configuración", "Could not save settings"),
                 Toast.LENGTH_SHORT).show();
@@ -418,11 +432,16 @@ public final class PauseActivity extends Activity {
 
     void applyRuntimeOption(String key) {
         if ("NX_GAMEPAD_LAYOUT".equals(key) || "NX_GAMEPAD_MAP".equals(key)
-                || "NX_SHOW_FPS".equals(key) || key.startsWith("NX_TOUCH_")
+                || "NX_SHOW_FPS".equals(key) || key.startsWith("NX_FPS_SHOW_") || key.startsWith("NX_TOUCH_")
                 || "NX_STICK_SENSITIVITY".equals(key) || "NX_CAMERA_SENSITIVITY".equals(key)) {
             String value = config.get(key);
             updateRuntimeOption(key, value == null ? "" : value);
         }
+    }
+
+    Choice metric(String key, String es, String en) {
+        return new Choice(categories[3], key, es, en, new String[] {"0", "1"},
+                new String[] {"Oculto", "Mostrar"}, new String[] {"Hidden", "Show"});
     }
 
     void showGamepadMapper(final int[] map) {

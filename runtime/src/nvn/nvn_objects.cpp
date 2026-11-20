@@ -295,6 +295,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     t.levels = uint32_t(driver(c, "nvnTextureBuilderGetLevels", {builder}));
     t.samples = uint32_t(driver(c, "nvnTextureBuilderGetSamples", {builder}));
     t.width = uint32_t(driver(c, "nvnTextureBuilderGetWidth", {builder}));
+    t.guest_width = t.width;
     t.height = uint32_t(driver(c, "nvnTextureBuilderGetHeight", {builder}));
     t.depth = uint32_t(driver(c, "nvnTextureBuilderGetDepth", {builder}));
     t.stride = uint32_t(driver(c, "nvnTextureBuilderGetStride", {builder}));
@@ -582,7 +583,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
         auto* t = get<Texture>(c.x[0]);       \
         c.x[0] = t ? uint64_t(t->field) : 0;  \
     }
-NX_TEXTURE_GETTER(TextureGetWidth, width)
+NX_TEXTURE_GETTER(TextureGetWidth, guest_width)
 NX_TEXTURE_GETTER(TextureGetHeight, height)
 NX_TEXTURE_GETTER(TextureGetDepth, depth)
 NX_TEXTURE_GETTER(TextureGetFormat, format)

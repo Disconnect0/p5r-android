@@ -1269,7 +1269,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         const bool is_ui_pass = s_uw_ui_learn ? uw_is_ui_vertex_shader(vs) : !g_state.depth.depth_test;
         // With camera patching, keep the world projection and center only the UI. GPU-side Hor+ instead
         // scales the world geometry while leaving UI centered in its 16:9 safe area.
-        const bool scale_draw = s_uw_cam_patch ? is_ui_pass : !is_ui_pass;
+        const bool scale_draw = s_uw_cam_patch ? (is_ui_pass && !uw_stretch_ui()) : (!is_ui_pass || !uw_stretch_ui());
         if (g_uw_wide && uw_vs_scaled(vs) && scale_draw) {
             // A short draw (a triangle or a quad) that samples a widened render target is a screen-space pass (post
             // chain, composite): it already covers the widened target.

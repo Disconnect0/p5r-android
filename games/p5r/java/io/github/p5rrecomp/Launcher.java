@@ -64,7 +64,7 @@ import java.util.Map;
  *               the game lacks it; or en-US, es, fr, de, it, ja, ko, zh-Hans, zh-Hant). The voices are the game's own
  *               option.
  *   resolution  720p (NX_HANDHELD=1, default) or 1080p (NX_HANDHELD=0)
- *   interface   at 720p (NX_HUD_1080=0, default: faster) or, in 720p, drawn at 1080p (NX_HUD_1080=1: sharper text)
+ *   interface   at a selectable resolution (NX_HUD_RES, including the phone's native height)
  *   graphics    low (default), medium or high: textures one mip smaller (NX_LOD_BIAS=1), half a mip, or the game's
  *               own. (A lower render resolution needs the engine's target sizes: games/p5r/PROGRESO.md.)
  *   frame rate  30 (NX_FPS_CAP=30, default) or 60 (NX_FPS_CAP=60: games/p5r/game.cpp patches the engine's interval)
@@ -128,6 +128,11 @@ public class Launcher extends Activity {
             if (key.equals(o.key)) return o;
         }
         return null;
+    }
+
+    Option fpsMetric(String key, String es, String en) {
+        return new Option(key, es, en, new String[] {"0", "1"},
+                new String[] {"Oculto", "Mostrar"}, new String[] {"Hidden", "Show"}, 0);
     }
 
     static File dataDir() { return new File(Environment.getExternalStorageDirectory(), DATA); }
@@ -359,9 +364,12 @@ public class Launcher extends Activity {
                 new String[] {"0", "1"},
                 new String[] {"Desactivada", "Activada"},
                 new String[] {"Off", "On"}, 0));
-        options.add(new Option("NX_HUD_1080", "Interfaz", "Interface", new String[] {"0", "1"},
-                new String[] {"720p (más rápida)", "1080p (textos nítidos)"},
-                new String[] {"720p (faster)", "1080p (sharp text)"}, 0));
+        options.add(new Option("NX_HUD_RES", "Resolución de interfaz", "Interface resolution",
+                new String[] {"360p", "480p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)", "2160p (Experimental)", "Nativa del teléfono (Experimental)"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)", "2160p (Experimental)", "Phone native (Experimental)"}, 2));
+        options.add(new Option("NX_UW_STRETCH_UI", "Interfaz Hor+", "Hor+ interface", new String[] {"0", "1"},
+                new String[] {"Centrada en 16:9", "Pantalla completa"}, new String[] {"Centered 16:9", "Full width"}, 1));
         options.add(new Option("GRAPHICS", "Gráficos", "Graphics", new String[] {"low", "medium", "high"},
                 new String[] {"Bajos", "Medios", "Altos"}, new String[] {"Low", "Medium", "High"}, 0));
         options.add(new Option("NX_MAX_ANISO", "Filtro anisotrópico", "Anisotropic filtering",
@@ -378,6 +386,12 @@ public class Launcher extends Activity {
                 new String[] {"Low (0.5x - best performance)", "Original (1.0x)"}, 0));
         options.add(new Option("NX_SHOW_FPS", "Contador de FPS", "FPS counter", new String[] {"0", "1"},
                 new String[] {"Desactivado", "Activado"}, new String[] {"Off", "On"}, 0));
+        options.add(fpsMetric("NX_FPS_SHOW_GPU", "Controlador gráfico", "GPU driver"));
+        options.add(fpsMetric("NX_FPS_SHOW_BATTERY_TEMP", "Temperatura de batería", "Battery temperature"));
+        options.add(fpsMetric("NX_FPS_SHOW_CPU_TEMP", "Temperatura de CPU", "CPU temperature"));
+        options.add(fpsMetric("NX_FPS_SHOW_CPU", "Uso del procesador", "CPU usage"));
+        options.add(fpsMetric("NX_FPS_SHOW_RAM", "Uso de RAM", "RAM usage"));
+        options.add(fpsMetric("NX_FPS_SHOW_GPU_LOAD", "Uso de GPU", "GPU usage"));
         options.add(new Option("NX_TOUCH_SHOW", "Controles táctiles", "On-screen controls", new String[] {"1", "0"},
                 new String[] {"Activados", "Desactivados"}, new String[] {"On", "Off"}, 0));
         options.add(new Option("NX_TOUCH_HIDE", "Ocultar controles", "Hide controls", new String[] {"0", "1"},
@@ -859,7 +873,8 @@ public class Launcher extends Activity {
 
     String settingsCategoryFor(Option option) {
         if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key) || "NX_ULTRAWIDE".equals(option.key)
-                || "NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key))
+                || "NX_FSR".equals(option.key) || "NX_HUD_RES".equals(option.key)
+                || "NX_UW_STRETCH_UI".equals(option.key))
             return t("Video", "Video");
         if ("GRAPHICS".equals(option.key) || "NX_FPS_CAP".equals(option.key)
                 || "NX_SHADOWS".equals(option.key) || "NX_MALI_LOW_SHADOWS".equals(option.key)
@@ -867,7 +882,7 @@ public class Launcher extends Activity {
             return t("Rendimiento", "Performance");
         if ("NX_NO_CROWD".equals(option.key) || "NX_DISABLE_BLOOM".equals(option.key))
             return t("Efectos", "Effects");
-        if ("NX_SHOW_FPS".equals(option.key) || option.key.startsWith("NX_TOUCH_")
+        if ("NX_SHOW_FPS".equals(option.key) || option.key.startsWith("NX_FPS_SHOW_") || option.key.startsWith("NX_TOUCH_")
                 || "NX_STICK_SENSITIVITY".equals(option.key) || "NX_CAMERA_SENSITIVITY".equals(option.key))
             return t("Interfaz", "Interface");
         if ("language".equals(option.key)) return t("Juego", "Game");
@@ -877,13 +892,14 @@ public class Launcher extends Activity {
     String settingsSubcategoryFor(Option option) {
         if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key))
             return t("Pantalla", "Display");
-        if ("NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key) || "NX_ULTRAWIDE".equals(option.key))
+        if ("NX_FSR".equals(option.key) || "NX_HUD_RES".equals(option.key) || "NX_ULTRAWIDE".equals(option.key)
+                || "NX_UW_STRETCH_UI".equals(option.key))
             return t("Calidad de imagen", "Image quality");
         if (settingsCategoryFor(option).equals(t("Rendimiento", "Performance")))
             return t("Rendimiento y gráficos", "Performance and graphics");
         if ("NX_NO_CROWD".equals(option.key)) return t("Mundo", "World");
         if ("NX_DISABLE_BLOOM".equals(option.key)) return t("Postprocesado", "Post-processing");
-        if ("NX_SHOW_FPS".equals(option.key)) return t("Indicadores", "Indicators");
+        if (option.key.startsWith("NX_FPS_SHOW_") || "NX_SHOW_FPS".equals(option.key)) return t("Indicadores", "Indicators");
         if (option.key.startsWith("NX_TOUCH_") && !"NX_STICK_SENSITIVITY".equals(option.key)
                 && !"NX_CAMERA_SENSITIVITY".equals(option.key))
             return t("Controles táctiles", "Touch controls");
@@ -1257,6 +1273,8 @@ public class Launcher extends Activity {
         load();
         for (Option o : options) {
             String v = config.get(o.key);
+            if ("NX_HUD_RES".equals(o.key) && v == null)
+                v = "1".equals(config.get("NX_HUD_1080")) ? "1080p" : "720p";
             if ("RESOLUTION".equals(o.key) && v == null) {
                 String hh = config.get("NX_HANDHELD");
                 String r = config.get("resolution");
@@ -1665,6 +1683,7 @@ public class Launcher extends Activity {
         if (!dataDir().isDirectory()) return;
         load();
         for (Option o : options) config.put(o.key, o.values[o.pick]);
+        config.put("NX_HUD_1080", "720p".equals(config.get("NX_HUD_RES")) ? "0" : "1");
         if ("1".equals(config.get("NX_ULTRAWIDE"))) {
             config.put("NX_STRETCH", "0");
             Option stretch = findOption("NX_STRETCH");

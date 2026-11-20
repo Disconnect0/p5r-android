@@ -192,6 +192,7 @@ struct GpuImage;  // the Vulkan side of a texture (nvn_vk.cpp)
 struct Texture : Object {
     uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
     uint32_t width = 0, height = 0, depth = 0, stride = 0;
+    uint32_t guest_width = 0;  // original width before NX_ULTRAWIDE changes the Vulkan render target
     uint64_t pool = 0, offset = 0, storage_size = 0;
     uint64_t memory = 0, gpu = 0;
     bool uw = false;  // NX_ULTRAWIDE: a screen-sized render target whose width was widened (nvn_ultrawide.cpp)

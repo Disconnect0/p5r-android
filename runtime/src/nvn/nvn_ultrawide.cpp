@@ -54,14 +54,20 @@ float uw_factor() {
     return k;
 }
 
+bool uw_stretch_ui() {
+    static const bool stretch = [] { const char* e = std::getenv("NX_UW_STRETCH_UI"); return e && e[0] == '1'; }();
+    return stretch;
+}
+
 uint32_t uw_widen(uint32_t w) {
     uint32_t v = uint32_t(std::lround(double(w) * uw_factor()));
     return v & ~1u;
 }
 
 bool uw_widen_texture(Texture& t) {
-    // Render targets (flags 8), the window textures (display, 1) and the scene colour (flags 0); not packaged assets (4).
-    if (!uw_on() || t.target != 1 || t.stride != 0 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
+    // Screen targets include P5R's window textures (flags 0xd) and render targets (flags 0xc).
+    // The old `(flags & 4)` exclusion accidentally rejected both, leaving the presented image at 16:9.
+    if (!uw_on() || t.target != 1 || t.stride != 0 || ((t.flags & 4) && !(t.flags & 9)) || t.width < 16 || t.height < 9) return false;
     double r = double(t.width) / double(t.height);
     if (std::fabs(r - k169) / k169 > 0.03) return false;
     static std::map<std::string, int> seen;  // each distinct widened shape once, for the study log

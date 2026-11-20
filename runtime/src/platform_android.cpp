@@ -57,6 +57,7 @@
 
 namespace nx::nvn {
 void pipeline_cache_save();
+std::string vk_device_name();
 }
 
 #ifndef MAP_FIXED_NOREPLACE
@@ -941,8 +942,13 @@ void request_immersive() {
 }  // namespace
 
 // Frames presented so far, for the launcher's FPS counter (GameActivity.nativeFrames, in the game's own process).
-extern "C" JNIEXPORT jlong JNICALL Java_io_github_belmantegu_wonderrecomp_GameActivity_nativeFrames(JNIEnv*, jclass) {
+extern "C" JNIEXPORT jlong JNICALL Java_io_github_p5rrecomp_GameActivity_nativeFrames(JNIEnv*, jclass) {
     return jlong(nx::g_frame.load());
+}
+
+extern "C" JNIEXPORT jstring JNICALL Java_io_github_p5rrecomp_GameActivity_nativeGpuName(JNIEnv* env, jclass) {
+    const std::string name = nx::nvn::vk_device_name();
+    return env->NewStringUTF(name.empty() ? "GPU" : name.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

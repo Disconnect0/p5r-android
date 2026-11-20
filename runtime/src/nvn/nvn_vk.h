@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdlib>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -48,17 +49,14 @@ struct GpuImage {
 bool low_3d_on();
 bool low_3d_texture(const Texture& t);
 
-// NX_HUD_1080 (nvn_image.cpp): render targets of the handheld screen's size, 1280x720, are made at 3/2 of it,
-// 1920x1080, so the 2D layers drawn into them (a game's HUD, menus and the window) reach the screen at the size their
-// art was made for while the 3D keeps its own targets. NX_HUD_RES=900: at 5/4 instead, 1600x900 (a third fewer pixels
-// for the GPU, art shrunk 1.2x instead of 1.5x). Guest pixel spans on such an image (viewports, scissors, copy and
-// clear rectangles, the window crop) are scaled the same way: offsets rounded down, ends up.
+// NX_HUD_RES (nvn_image.cpp): resize handheld 1280x720 or docked 1920x1080 UI targets to a selected output height.
+// Guest pixel spans on such an image (viewports, scissors, copy and clear rectangles, the window crop) are scaled the
+// same way; NX_HUD_RES=native follows the Android window height.
 struct Texture;
 bool hud_1080_texture(const Texture& t);
-int32_t hud_quarters();  // the scale in quarters: 6 (1080p) or 5 (900p)
-inline int32_t hud_up(int32_t v) { return int32_t((int64_t(v) * hud_quarters()) >> 2); }
-inline int32_t hud_up_end(int32_t v) { return int32_t((int64_t(v) * hud_quarters() + 3) >> 2); }
-inline float hud_scale() { return float(hud_quarters()) / 4.0f; }
+float hud_scale();
+inline int32_t hud_up(int32_t v) { return int32_t(std::floor(float(v) * hud_scale())); }
+inline int32_t hud_up_end(int32_t v) { return int32_t(std::ceil(float(v) * hud_scale())); }
 
 VkDevice vk_device();
 bool vk_depth_clip_control();
@@ -119,6 +117,7 @@ bool is_powervr();
 bool gpu_require_subgroup32();  // compute pipelines pin the subgroup size to 32 (nvn_pipeline.cpp)
 bool gpu_is_integrated();  // the device in use is an integrated GPU (set when the device is made)
 VkPhysicalDevice vk_physical();
+std::string vk_device_name();
 // What the device offers for a GPU-side video picture (nvn_caps.cpp, filled in when the device is made): the Android
 // external memory extensions and whether the planes of an NV12 picture can be sampled. Read-only, and nothing here
 // enables an extension or changes a device. hle_movie.cpp reports it and takes the path it can (see its header).

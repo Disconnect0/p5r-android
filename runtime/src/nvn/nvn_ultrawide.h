@@ -15,6 +15,7 @@ struct Texture;
 
 float uw_factor();                        // k > 1 when on, 1 when off (decided once)
 inline bool uw_on() { return uw_factor() > 1.0f; }
+bool uw_stretch_ui();                    // NX_UW_STRETCH_UI: use full width instead of centered 16:9 UI
 uint32_t uw_widen(uint32_t w);            // the widened width of a 16:9-chain size
 bool uw_widen_texture(Texture& t);        // a screen-sized render target: width widened, t.uw set
 bool uw_crop(int32_t crop[4]);            // nvnWindowSetCrop's rect widened when it is the whole 16:9 picture

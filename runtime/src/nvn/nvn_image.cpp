@@ -1,11 +1,15 @@
 // The VkImage behind an NVN texture, and its layout transitions (split from nvn_vk.cpp). Under the GPU lock.
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <tuple>
 
 #include "nvn_vk.h"
+#include "nvn_ultrawide.h"
+#include "platform.h"
 
 namespace nx::nvn {
 
@@ -80,28 +84,39 @@ std::map<StorageKey, std::weak_ptr<GpuImage>> g_live_images;
 // NX_HUD_1080=1 (games turn it on, P5R by default): a plain 2D 1280x720 render target (COMPRESSIBLE, flags 8: P5R's
 // are 0xc, its window textures 0xd), not pitch-linear (the CPU writes those), one level and sample.
 bool hud_1080_texture(const Texture& t) {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_HUD_1080");
-        return e && e[0] == '1';
+    const uint32_t base_height = [] {
+        const char* handheld = std::getenv("NX_HANDHELD");
+        return handheld && handheld[0] == '0' ? 1080u : 720u;
     }();
-    if (!on || t.target != 1 || t.width != 1280 || t.height != 720 || !(t.flags & 8) || t.stride || t.levels > 1 ||
+    const uint32_t guest_width = t.guest_width ? t.guest_width : t.width;
+    if (std::fabs(hud_scale() - 1.0f) < 0.001f || t.target != 1 || guest_width != base_height * 16u / 9u ||
+        t.height != base_height || !(t.flags & 8) || t.stride || t.levels > 1 ||
         t.samples > 1)
         return false;
     static std::map<std::pair<uint32_t, uint32_t>, bool> seen;
     if (!seen[{t.format, t.flags}]) {
         seen[{t.format, t.flags}] = true;
-        log("nvn: hud 1080: 1280x720 targets of format %#x (flags %#x) made at %dx%d", t.format, t.flags,
-            hud_up(1280), hud_up(720));
+        log("nvn: hud: %ux%u targets of format %#x (flags %#x) made at %dx%d", guest_width, t.height, t.format, t.flags,
+            hud_up(int32_t(guest_width)), hud_up(int32_t(t.height)));
     }
     return true;
 }
 
-int32_t hud_quarters() {
-    static const int32_t q = [] {
+float hud_scale() {
+    static const float scale = [] {
+        const char* handheld = std::getenv("NX_HANDHELD");
+        const float base = handheld && handheld[0] == '0' ? 1080.0f : 720.0f;
         const char* e = std::getenv("NX_HUD_RES");
-        return e && std::atoi(e) == 900 ? 5 : 6;
+        if (!e || !*e) return std::getenv("NX_HUD_1080") && std::getenv("NX_HUD_1080")[0] == '1' ? 1080.0f / base : 1.0f;
+        if (!std::strcmp(e, "native")) {
+            uint32_t w = 0, h = 0;
+            plat::window_size(w, h);
+            return h ? float(h) / base : 1.5f;
+        }
+        int h = std::atoi(e);
+        return h > 0 ? float(h) / base : 1.0f;
     }();
-    return q;
+    return scale;
 }
 
 bool low_3d_on() {
@@ -172,7 +187,12 @@ GpuImage* image_of(uint64_t guest) {
     img->width = std::max(1u, t->width);
     img->height = (t->target == 0 || t->target == 3) && !one_d ? 1u : std::max(1u, t->height);
     img->levels = std::max(1u, t->levels);
-    if (hud_1080_texture(*t)) img->hud = true, img->width = uint32_t(hud_up(1280)), img->height = uint32_t(hud_up(720));
+    if (hud_1080_texture(*t)) {
+        img->hud = true;
+        const uint32_t base_width = t->guest_width ? t->guest_width : t->width;
+        img->width = t->uw ? uw_widen(uint32_t(hud_up(int32_t(base_width)))) : uint32_t(hud_up(int32_t(base_width)));
+        img->height = uint32_t(hud_up(int32_t(t->height)));
+    }
     if (low_3d_texture(*t)) {
         img->low_3d = true;
         img->width = std::max(1u, (t->width * 3) / 4);   // 960->720, 480->360, 240->180
