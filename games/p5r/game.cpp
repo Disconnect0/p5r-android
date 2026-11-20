@@ -822,8 +822,9 @@ void game::after_init() {
     // Its plain alpha-blended HUD art (textured draws only) leaves the HUD target's alpha alone (runtime nvn_draw.cpp,
     // PROGRESO 70-71): the faces' translucent layers came out grey with the threshold alone.
     setenv("NX_HUD_KEEP_ALPHA", "1", 0);
-    // Use GPU-side Hor+ and the culling hook by default; retain NX_UW_CAMERA=1 as the legacy camera-scan mode.
-    setenv("NX_UW_CAMERA", "0", 0);
+    // Use the camera-aspect Hor+ path by default; it expands the projection itself and avoids a clipped 16:9 scene.
+    // The P5R frustum rescue remains available when NX_UW_CAMERA=0 is explicitly requested for diagnostics.
+    setenv("NX_UW_CAMERA", "1", 1);
 #endif
     const LoadedModule* m = module_at(find_symbol("nnMain"));
     if (m && (g_interval_setter = hook_function(m->base + 0x1048ee0, interval_setter_hook))) {

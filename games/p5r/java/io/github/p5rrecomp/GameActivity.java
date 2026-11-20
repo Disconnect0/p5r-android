@@ -24,7 +24,7 @@ public final class GameActivity extends NativeActivity {
     private boolean pauseScreenOpening;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TextView metricsView;
-    private long previousFrames, previousCpuTotal, previousCpuIdle;
+    private long previousCpuTotal, previousCpuIdle;
     private final Runnable metricsTick = new Runnable() {
         @Override public void run() {
             refreshMetrics();
@@ -32,7 +32,6 @@ public final class GameActivity extends NativeActivity {
         }
     };
 
-    private static native long nativeFrames();
     private static native String nativeGpuName();
 
     @Override protected void onCreate(android.os.Bundle state) {
@@ -44,7 +43,7 @@ public final class GameActivity extends NativeActivity {
         metricsView.setPadding(dp(9), dp(6), dp(9), dp(6));
         metricsView.setBackgroundColor(0xcc101015);
         metricsView.setVisibility(View.GONE);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.RIGHT);
         lp.setMargins(dp(10), dp(10), dp(10), dp(10));
         addContentView(metricsView, lp);
     }
@@ -69,16 +68,14 @@ public final class GameActivity extends NativeActivity {
             metricsView.setVisibility(View.GONE);
             return;
         }
-        long frames = nativeFrames();
-        long delta = previousFrames == 0 ? 0 : Math.max(0, frames - previousFrames);
-        previousFrames = frames;
-        StringBuilder lines = new StringBuilder("FPS  ").append(delta);
+        StringBuilder lines = new StringBuilder();
         if (enabled(config, "NX_FPS_SHOW_GPU")) lines.append("\nGPU  ").append(safeGpuName());
         if (enabled(config, "NX_FPS_SHOW_BATTERY_TEMP")) lines.append("\nBAT  ").append(batteryTemperature());
         if (enabled(config, "NX_FPS_SHOW_CPU_TEMP")) lines.append("\nCPU° ").append(cpuTemperature());
         if (enabled(config, "NX_FPS_SHOW_CPU")) lines.append("\nCPU  ").append(cpuUsage()).append('%');
         if (enabled(config, "NX_FPS_SHOW_RAM")) lines.append("\nRAM  ").append(ramUsage()).append('%');
         if (enabled(config, "NX_FPS_SHOW_GPU_LOAD")) lines.append("\nGPU% ").append(gpuUsage());
+        if (lines.length() == 0) { metricsView.setVisibility(View.GONE); return; }
         metricsView.setText(lines.toString());
         metricsView.setVisibility(View.VISIBLE);
     }

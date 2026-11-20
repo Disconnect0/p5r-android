@@ -941,11 +941,6 @@ void request_immersive() {
 
 }  // namespace
 
-// Frames presented so far, for the launcher's FPS counter (GameActivity.nativeFrames, in the game's own process).
-extern "C" JNIEXPORT jlong JNICALL Java_io_github_p5rrecomp_GameActivity_nativeFrames(JNIEnv*, jclass) {
-    return jlong(nx::g_frame.load());
-}
-
 extern "C" JNIEXPORT jstring JNICALL Java_io_github_p5rrecomp_GameActivity_nativeGpuName(JNIEnv* env, jclass) {
     const std::string name = nx::nvn::vk_device_name();
     return env->NewStringUTF(name.empty() ? "GPU" : name.c_str());

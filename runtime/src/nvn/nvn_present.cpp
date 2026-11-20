@@ -387,14 +387,8 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     plat::OverlayShape shapes[kOverlayMax];
     size_t count = plat::touch_overlay(shapes, kOverlayMax);
     // NX_SHOW_FPS=1 (the launcher's FPS counter, off by default): presents over the last second, top left.
-    static const bool show_fps = [] {
-#if defined(__ANDROID__)
-        return false;  // Android renders the selectable metrics panel in GameActivity.
-#else
-        const char* e = std::getenv("NX_SHOW_FPS");
-        return e && e[0] == '1';
-#endif
-    }();
+    const char* fps_env = std::getenv("NX_SHOW_FPS");
+    const bool show_fps = fps_env && fps_env[0] == '1';
     if (show_fps && count < kOverlayMax) {
         static uint64_t t0 = plat::monotonic_ns(), frames = 0;
         static uint32_t fps = 0;

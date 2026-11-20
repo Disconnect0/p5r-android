@@ -86,7 +86,7 @@ std::map<StorageKey, std::weak_ptr<GpuImage>> g_live_images;
 bool hud_1080_texture(const Texture& t) {
     const uint32_t base_height = [] {
         const char* handheld = std::getenv("NX_HANDHELD");
-        return handheld && handheld[0] == '0' ? 1080u : 720u;
+        return handheld ? 720u : 1080u;
     }();
     const uint32_t guest_width = t.guest_width ? t.guest_width : t.width;
     if (std::fabs(hud_scale() - 1.0f) < 0.001f || t.target != 1 || guest_width != base_height * 16u / 9u ||
@@ -105,7 +105,7 @@ bool hud_1080_texture(const Texture& t) {
 float hud_scale() {
     static const float scale = [] {
         const char* handheld = std::getenv("NX_HANDHELD");
-        const float base = handheld && handheld[0] == '0' ? 1080.0f : 720.0f;
+        const float base = handheld ? 720.0f : 1080.0f;
         const char* e = std::getenv("NX_HUD_RES");
         if (!e || !*e) return std::getenv("NX_HUD_1080") && std::getenv("NX_HUD_1080")[0] == '1' ? 1080.0f / base : 1.0f;
         if (!std::strcmp(e, "native")) {
