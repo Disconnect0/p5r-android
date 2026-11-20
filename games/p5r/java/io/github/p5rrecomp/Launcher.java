@@ -519,7 +519,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.22");
+        version.setText("v0.5.23");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -810,16 +810,26 @@ public class Launcher extends Activity {
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
         String categoryName = settingsCategories[settingsCategoryIndex];
+        String currentSubcategory = null;
         for (final Option option : options) {
-            if (categoryName.equals(settingsCategoryFor(option))) addOptionSettingsRow(rows, option);
+            if (categoryName.equals(settingsCategoryFor(option))) {
+                String subcategory = settingsSubcategoryFor(option);
+                if (!subcategory.equals(currentSubcategory)) {
+                    addSettingsSectionHeading(rows, subcategory);
+                    currentSubcategory = subcategory;
+                }
+                addOptionSettingsRow(rows, option);
+            }
         }
         if (categoryName.equals(t("Mandos", "Controllers"))) {
+            addSettingsSectionHeading(rows, t("Asignación manual", "Manual mapping"));
             addSettingsActionRow(rows, t("Asignar botones del mando", "Remap gamepad buttons"),
                     t("Configurar", "Configure"), new View.OnClickListener() {
                         @Override public void onClick(View v) { openGamepadMapper(); }
                     });
         }
         if (categoryName.equals(t("Interfaz", "Interface"))) {
+            addSettingsSectionHeading(rows, t("Distribución táctil", "Touch layout"));
             addSettingsActionRow(rows, t("Posición de los controles", "Touch control positions"),
                     t("Mover", "Move"), new View.OnClickListener() {
                         @Override public void onClick(View v) {
@@ -851,6 +861,41 @@ public class Launcher extends Activity {
             return t("Interfaz", "Interface");
         if ("language".equals(option.key)) return t("Juego", "Game");
         return t("Mandos", "Controllers");
+    }
+
+    String settingsSubcategoryFor(Option option) {
+        if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key))
+            return t("Pantalla", "Display");
+        if ("NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key))
+            return t("Calidad de imagen", "Image quality");
+        if (settingsCategoryFor(option).equals(t("Rendimiento", "Performance")))
+            return t("Rendimiento y gráficos", "Performance and graphics");
+        if ("NX_NO_CROWD".equals(option.key)) return t("Mundo", "World");
+        if ("NX_DISABLE_BLOOM".equals(option.key)) return t("Postprocesado", "Post-processing");
+        if ("NX_SHOW_FPS".equals(option.key)) return t("Indicadores", "Indicators");
+        if (option.key.startsWith("NX_TOUCH_") && !"NX_STICK_SENSITIVITY".equals(option.key)
+                && !"NX_CAMERA_SENSITIVITY".equals(option.key))
+            return t("Controles táctiles", "Touch controls");
+        if ("NX_STICK_SENSITIVITY".equals(option.key) || "NX_CAMERA_SENSITIVITY".equals(option.key))
+            return t("Sensibilidad", "Sensitivity");
+        if ("language".equals(option.key)) return t("Idioma", "Language");
+        return t("Distribución de botones", "Button layout");
+    }
+
+    void addSettingsSectionHeading(LinearLayout rows, String title) {
+        TextView heading = new TextView(this);
+        heading.setText(title.toUpperCase(java.util.Locale.ROOT));
+        heading.setTextColor(Color.rgb(220, 188, 111));
+        heading.setTextSize(15);
+        heading.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        heading.setPadding(dp(7), dp(9), 0, dp(2));
+        rows.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+        View accent = new View(this);
+        accent.setBackgroundColor(Color.rgb(230, 18, 34));
+        LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(38), dp(2));
+        accentParams.leftMargin = dp(7);
+        accentParams.bottomMargin = dp(3);
+        rows.addView(accent, accentParams);
     }
 
     void addOptionSettingsRow(LinearLayout rows, final Option option) {
@@ -896,6 +941,7 @@ public class Launcher extends Activity {
     }
 
     void addDataToolRows(LinearLayout rows) {
+        addSettingsSectionHeading(rows, t("Archivos del juego", "Game files"));
         addSettingsActionRow(rows, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"),
                 t("Elegir", "Choose"), new View.OnClickListener() {
                     @Override public void onClick(View v) { pick(PICK_GAME, "*/*", false); }
@@ -908,6 +954,7 @@ public class Launcher extends Activity {
                 new View.OnClickListener() {
                     @Override public void onClick(View v) { pick(PICK_ICON, "image/*", false); }
                 });
+        addSettingsSectionHeading(rows, t("Partidas", "Saved games"));
         addSettingsActionRow(rows, t("Partidas guardadas", "Saves"), t("Importar", "Import"),
                 new View.OnClickListener() {
                     @Override public void onClick(View v) {
@@ -922,6 +969,7 @@ public class Launcher extends Activity {
                         exportSaves();
                     }
                 });
+        addSettingsSectionHeading(rows, t("Complementos", "Add-ons"));
         addSettingsActionRow(rows, t("Traducción / Paquete (.cpk)", "Translation / CPK mod"),
                 t("Importar CPK", "Import CPK"), new View.OnClickListener() {
                     @Override public void onClick(View v) { pick(PICK_CPK, "*/*", false); }
@@ -950,6 +998,7 @@ public class Launcher extends Activity {
         settingsNavigation.add(removeDriverButton);
         showDriver();
 
+        addSettingsSectionHeading(rows, t("Diagnóstico", "Diagnostics"));
         addSettingsActionRow(rows, t("Registros de depuración", "Debug logs"), t("Exportar registros", "Export logs"),
                 new View.OnClickListener() {
                     @Override public void onClick(View v) { exportLogs(); }
