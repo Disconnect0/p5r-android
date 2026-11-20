@@ -511,7 +511,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.18");
+        version.setText("v0.5.19");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -570,6 +570,30 @@ public class Launcher extends Activity {
         return button;
     }
 
+    void styleSettingsButton(final Button button) {
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(16);
+        button.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        button.setFocusable(true);
+        button.setFocusableInTouchMode(true);
+        button.setBackground(new MenuPanelDrawable(dp(4), false));
+        button.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View view, boolean focused) {
+                button.setTextColor(focused ? Color.BLACK : Color.WHITE);
+                button.setBackground(new MenuPanelDrawable(dp(4), focused));
+            }
+        });
+    }
+
+    void styleSettingsLabel(TextView label) {
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(17);
+        label.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        label.setShadowLayer(dp(2), dp(1), dp(1), Color.BLACK);
+    }
+
     static final class MenuPanelDrawable extends android.graphics.drawable.Drawable {
         final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
         final int border;
@@ -623,22 +647,29 @@ public class Launcher extends Activity {
 
     void buildSettings() {
         settingsVisible = true;
+        FrameLayout screen = new FrameLayout(this);
+        ImageView backdropImage = new ImageView(this);
+        int backdropId = getResources().getIdentifier("p5r_launcher_background", "drawable", getPackageName());
+        if (backdropId != 0) backdropImage.setImageResource(backdropId);
+        backdropImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        screen.addView(backdropImage, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        View shade = new View(this);
+        shade.setBackgroundColor(Color.argb(128, 0, 0, 0));
+        screen.addView(shade, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(20, 4, 6));
+        root.setBackgroundColor(Color.argb(115, 5, 5, 8));
         int pad = dp(24);
         root.setPadding(pad, pad, pad, pad);
 
         Button back = new Button(this);
         back.setText(t("← Inicio", "← Home"));
-        back.setAllCaps(false);
-        back.setTextColor(Color.rgb(220, 188, 111));
-        back.setFocusable(true);
-        back.setFocusableInTouchMode(true);
-        back.setBackgroundColor(Color.TRANSPARENT);
+        styleSettingsButton(back);
         back.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        root.addView(back, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-        focusWhenReady(back);
+        root.addView(back, new LinearLayout.LayoutParams(dp(170), dp(52)));
         back.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -648,10 +679,17 @@ public class Launcher extends Activity {
 
         TextView title = new TextView(this);
         title.setText(t("AJUSTES", "SETTINGS"));
-        title.setTextColor(Color.rgb(230, 0, 18));
-        title.setTextSize(30);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(32);
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        title.setShadowLayer(dp(2), dp(1), dp(2), Color.BLACK);
         root.addView(title);
+        View titleAccent = new View(this);
+        titleAccent.setBackgroundColor(Color.rgb(230, 18, 34));
+        LinearLayout.LayoutParams titleAccentParams = new LinearLayout.LayoutParams(dp(78), dp(4));
+        titleAccentParams.topMargin = dp(6);
+        titleAccentParams.bottomMargin = dp(10);
+        root.addView(titleAccent, titleAccentParams);
 
         addRow(root, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"), t("Elegir", "Choose"),
                 new View.OnClickListener() {
@@ -680,12 +718,13 @@ public class Launcher extends Activity {
             row.setPadding(0, dp(4), 0, dp(4));
             TextView name = new TextView(this);
             name.setText(t(o.es, o.en));
-            name.setTextColor(Color.WHITE);
-            name.setTextSize(17);
+            styleSettingsLabel(name);
             row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
             final Button value = new Button(this);
             value.setAllCaps(false);
             value.setMinWidth(dp(180));
+            value.setText(label(o));
+            styleSettingsButton(value);
             row.addView(value);
             value.setOnClickListener(new View.OnClickListener() {
                 @Override
@@ -714,13 +753,12 @@ public class Launcher extends Activity {
         edit.setPadding(0, dp(4), 0, dp(4));
         TextView editName = new TextView(this);
         editName.setText(t("Posición de los controles", "Controls position"));
-        editName.setTextColor(Color.WHITE);
-        editName.setTextSize(17);
+        styleSettingsLabel(editName);
         edit.addView(editName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button editButton = new Button(this);
-        editButton.setAllCaps(false);
         editButton.setMinWidth(dp(180));
         editButton.setText(t("Mover", "Move"));
+        styleSettingsButton(editButton);
         edit.addView(editButton);
         editButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -742,18 +780,17 @@ public class Launcher extends Activity {
         saves.setPadding(0, dp(4), 0, dp(4));
         TextView savesName = new TextView(this);
         savesName.setText(t("Partidas guardadas", "Saves"));
-        savesName.setTextColor(Color.WHITE);
-        savesName.setTextSize(17);
+        styleSettingsLabel(savesName);
         saves.addView(savesName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button importButton = new Button(this);
-        importButton.setAllCaps(false);
         importButton.setMinWidth(dp(88));
         importButton.setText(t("Importar", "Import"));
+        styleSettingsButton(importButton);
         saves.addView(importButton);
         Button exportButton = new Button(this);
-        exportButton.setAllCaps(false);
         exportButton.setMinWidth(dp(88));
         exportButton.setText(t("Exportar", "Export"));
+        styleSettingsButton(exportButton);
         saves.addView(exportButton);
         importButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -784,13 +821,12 @@ public class Launcher extends Activity {
         transRow.setPadding(0, dp(4), 0, dp(4));
         TextView transName = new TextView(this);
         transName.setText(t("Traducción / Paquete (.cpk)", "Translation / CPK mod"));
-        transName.setTextColor(Color.WHITE);
-        transName.setTextSize(17);
+        styleSettingsLabel(transName);
         transRow.addView(transName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button transButton = new Button(this);
-        transButton.setAllCaps(false);
         transButton.setMinWidth(dp(180));
         transButton.setText(t("Importar CPK", "Import CPK"));
+        styleSettingsButton(transButton);
         transRow.addView(transButton);
         transButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -810,18 +846,17 @@ public class Launcher extends Activity {
         drvRow.setGravity(Gravity.CENTER_VERTICAL);
         drvRow.setPadding(0, dp(4), 0, dp(4));
         driverName = new TextView(this);
-        driverName.setTextColor(Color.WHITE);
-        driverName.setTextSize(17);
+        styleSettingsLabel(driverName);
         drvRow.addView(driverName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button drvImport = new Button(this);
-        drvImport.setAllCaps(false);
         drvImport.setMinWidth(dp(88));
         drvImport.setText(t("Importar", "Import"));
+        styleSettingsButton(drvImport);
         drvRow.addView(drvImport);
         Button drvRemove = new Button(this);
-        drvRemove.setAllCaps(false);
         drvRemove.setMinWidth(dp(88));
         drvRemove.setText(t("Quitar", "Remove"));
+        styleSettingsButton(drvRemove);
         drvRow.addView(drvRemove);
         drvImport.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -845,13 +880,12 @@ public class Launcher extends Activity {
         logsRow.setPadding(0, dp(4), 0, dp(4));
         TextView logsName = new TextView(this);
         logsName.setText(t("Registros de depuración", "Debug logs"));
-        logsName.setTextColor(Color.WHITE);
-        logsName.setTextSize(17);
+        styleSettingsLabel(logsName);
         logsRow.addView(logsName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button logsButton = new Button(this);
-        logsButton.setAllCaps(false);
         logsButton.setMinWidth(dp(180));
         logsButton.setText(t("Exportar registros", "Export logs"));
+        styleSettingsButton(logsButton);
         logsRow.addView(logsButton);
         logsButton.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -861,9 +895,15 @@ public class Launcher extends Activity {
         });
         root.addView(logsRow);
 
+        updateButtons(root);
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(Color.TRANSPARENT);
         scroll.addView(root);
-        setContentView(scroll);
+        screen.addView(scroll, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(screen);
+        focusWhenReady(back);
     }
 
     @Override
@@ -1547,13 +1587,12 @@ public class Launcher extends Activity {
         row.setPadding(0, dp(4), 0, dp(4));
         TextView name = new TextView(this);
         name.setText(label);
-        name.setTextColor(Color.WHITE);
-        name.setTextSize(17);
+        styleSettingsLabel(name);
         row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         Button b = new Button(this);
-        b.setAllCaps(false);
         b.setMinWidth(dp(180));
         b.setText(button);
+        styleSettingsButton(b);
         b.setOnClickListener(click);
         row.addView(b);
         root.addView(row);
