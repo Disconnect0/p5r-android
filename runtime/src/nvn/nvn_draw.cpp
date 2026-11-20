@@ -688,7 +688,8 @@ void init_draw_env_once() {
         s_keep_hud_alpha = 0;
     }
     s_prim_restart_on = !(std::getenv("NX_PRIM_RESTART") && std::getenv("NX_PRIM_RESTART")[0] == '0');
-    s_uw_cam_patch = !(std::getenv("NX_UW_CAMERA") && std::getenv("NX_UW_CAMERA")[0] == '0');
+    const char* uw_camera = std::getenv("NX_UW_CAMERA");
+    s_uw_cam_patch = uw_camera && uw_camera[0] == '1';
     if (const char* e = std::getenv("NX_UW_UI")) {
         s_uw_ui_learn = std::strcmp(e, "learn") == 0;
     }
@@ -1265,8 +1266,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
             if (lt && lt->format == 0x25 && (lt->flags & 8)) uw_ui_vertex_shader(vs);
         }
         // NX_UW_UI=learn: only the vertex shaders learned above; default: every draw without depth test (screen-space UI).
-        const bool ui_pick = !s_uw_cam_patch || (s_uw_ui_learn ? uw_is_ui_vertex_shader(vs) : !g_state.depth.depth_test);
-        if (g_uw_wide && uw_vs_scaled(vs) && ui_pick) {
+        const bool is_ui_pass = s_uw_ui_learn ? uw_is_ui_vertex_shader(vs) : !g_state.depth.depth_test;
+        // With camera patching, keep the world projection and center only the UI. GPU-side Hor+ instead
+        // scales the world geometry while leaving UI centered in its 16:9 safe area.
+        const bool scale_draw = s_uw_cam_patch ? is_ui_pass : !is_ui_pass;
+        if (g_uw_wide && uw_vs_scaled(vs) && scale_draw) {
             // A short draw (a triangle or a quad) that samples a widened render target is a screen-space pass (post
             // chain, composite): it already covers the widened target.
             bool samples_wide = false;

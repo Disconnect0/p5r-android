@@ -89,7 +89,7 @@ VkSampler sampler_for(const SamplerInfo& s, bool shadow, bool biased) {
 #else
         float def = 16.0f;
 #endif
-        return std::clamp(e ? float(std::atof(e)) : def, 1.0f, 16.0f);
+        return std::clamp(e && std::strcmp(e, "auto") != 0 ? float(std::atof(e)) : def, 1.0f, 16.0f);
     }();
     ci.maxAnisotropy = std::min(s.max_anisotropy, aniso_cap);
     ci.anisotropyEnable = ci.maxAnisotropy > 1.0f;

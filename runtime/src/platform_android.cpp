@@ -464,11 +464,14 @@ void window_size(uint32_t& w, uint32_t& h) {
     std::string r = setting("resolution");
 
     auto parse_target_h = [](const std::string& s) -> uint32_t {
+        if (s == "native") return UINT32_MAX;
         if (s == "360p" || s == "360") return 360;
         if (s == "480p" || s == "480") return 480;
         if (s == "540p" || s == "540") return 720;
         if (s == "720p" || s == "720") return 720;
         if (s == "1080p" || s == "1080") return 1080;
+        if (s == "1440p" || s == "1440") return 1440;
+        if (s == "2160p" || s == "2160") return 2160;
         unsigned cw = 0, ch = 0;
         if (!s.empty() && std::sscanf(s.c_str(), "%ux%u", &cw, &ch) == 2 && ch) return ch;
         return 0;
@@ -479,6 +482,7 @@ void window_size(uint32_t& w, uint32_t& h) {
     if (!target_h) target_h = parse_target_h(r);
 
     if (target_h) {
+        if (target_h == UINT32_MAX) { w = sw; h = sh; return; }
         float scale = float(target_h) / float(sh);
         w = uint32_t(float(sw) * scale + 0.5f) & ~1u;
         h = target_h & ~1u;

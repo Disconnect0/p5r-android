@@ -91,9 +91,15 @@ public final class PauseActivity extends Activity {
 
     void loadOptions() {
         choices.add(new Choice(categories[0], "RESOLUTION", "Resolución interna", "Internal resolution",
-                new String[] {"360p", "480p", "720p", "1080p"}, new String[] {"360p", "480p", "720p", "1080p"},
-                new String[] {"360p", "480p", "720p", "1080p"}));
+                new String[] {"360p", "480p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)", "2160p (Experimental)",
+                        "Nativa del teléfono (Experimental)"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)", "2160p (Experimental)",
+                        "Phone native (Experimental)"}));
         choices.add(toggle(categories[0], "NX_STRETCH", "Pantalla completa (estirar)", "Fullscreen (stretch)", false));
+        choices.add(new Choice(categories[0], "NX_ULTRAWIDE", "Pantalla ancha real (Hor+)", "True widescreen (Hor+)",
+                new String[] {"0", "1"}, new String[] {"Desactivada", "Automática · más campo de visión"},
+                new String[] {"Off", "Auto · wider field of view"}));
         choices.add(toggle(categories[0], "NX_FSR", "Superresolución FSR", "FSR super resolution", false));
         choices.add(new Choice(categories[0], "NX_HUD_1080", "Interfaz", "Interface", new String[] {"0", "1"},
                 new String[] {"720p · más rápida", "1080p · textos nítidos"}, new String[] {"720p · faster", "1080p · sharper text"}));
@@ -101,6 +107,10 @@ public final class PauseActivity extends Activity {
         choices.add(new Choice(categories[1], "GRAPHICS", "Calidad de gráficos", "Graphics quality",
                 new String[] {"low", "medium", "high"}, new String[] {"Bajos", "Medios", "Altos"},
                 new String[] {"Low", "Medium", "High"}));
+        choices.add(new Choice(categories[1], "NX_MAX_ANISO", "Filtro anisotrópico", "Anisotropic filtering",
+                new String[] {"auto", "1", "2", "4", "8", "16"},
+                new String[] {"Automático", "1x · desactivado", "2x", "4x", "8x", "16x"},
+                new String[] {"Auto", "1x · off", "2x", "4x", "8x", "16x"}));
         choices.add(new Choice(categories[1], "NX_FPS_CAP", "Límite de fotogramas", "Frame rate limit",
                 new String[] {"30", "60"}, new String[] {"30 fps", "60 fps · experimental"},
                 new String[] {"30 fps", "60 fps · experimental"}));
@@ -342,12 +352,18 @@ public final class PauseActivity extends Activity {
         int index = 0;
         for (int i = 0; i < choice.values.length; i++) if (choice.values[i].equals(current)) index = i;
         config.put(choice.key, choice.values[(index + 1) % choice.values.length]);
+        if ("NX_ULTRAWIDE".equals(choice.key) && "1".equals(config.get(choice.key))) {
+            config.put("NX_STRETCH", "0");
+        } else if ("NX_STRETCH".equals(choice.key) && "1".equals(config.get(choice.key))) {
+            config.put("NX_ULTRAWIDE", "0");
+        }
         if ("RESOLUTION".equals(choice.key)) {
             String resolution = config.get(choice.key);
             config.put("resolution", resolution);
             config.put("NX_RENDER_RES", resolution);
             config.put("NX_RES", resolution);
-            config.put("NX_HANDHELD", "1080p".equals(resolution) ? "0" : "1");
+            config.put("NX_HANDHELD", "360p".equals(resolution) || "480p".equals(resolution)
+                    || "720p".equals(resolution) ? "1" : "0");
         } else if ("GRAPHICS".equals(choice.key)) {
             config.remove("NX_LOD_BIAS");
             String preset = config.get(choice.key);
@@ -356,7 +372,18 @@ public final class PauseActivity extends Activity {
         }
         if (persist()) {
             valueButton.setText(choiceLabel(choice));
+            for (String siblingKey : new String[] {"NX_STRETCH", "NX_ULTRAWIDE"}) {
+                if (siblingKey.equals(choice.key)) continue;
+                Button sibling = optionButtons.get(siblingKey);
+                if (sibling != null) {
+                    for (Choice candidate : choices)
+                        if (siblingKey.equals(candidate.key)) sibling.setText(choiceLabel(candidate));
+                }
+            }
             applyRuntimeOption(choice.key);
+            if ("NX_ULTRAWIDE".equals(choice.key) || "NX_MAX_ANISO".equals(choice.key))
+                Toast.makeText(this, t("Este ajuste se aplica al iniciar el juego.",
+                        "This setting takes effect the next time the game starts."), Toast.LENGTH_SHORT).show();
             if ("NX_SHADOWS".equals(choice.key)) {
                 Button quality = optionButtons.get("NX_MALI_LOW_SHADOWS");
                 if (quality != null) {

@@ -61,7 +61,7 @@ uint32_t uw_widen(uint32_t w) {
 
 bool uw_widen_texture(Texture& t) {
     // Render targets (flags 8), the window textures (display, 1) and the scene colour (flags 0); not packaged assets (4).
-    if (!uw_on() || t.target != 1 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
+    if (!uw_on() || t.target != 1 || t.stride != 0 || (t.flags & 4) || t.width < 16 || t.height < 9) return false;
     double r = double(t.width) / double(t.height);
     if (std::fabs(r - k169) / k169 > 0.03) return false;
     static std::map<std::string, int> seen;  // each distinct widened shape once, for the study log

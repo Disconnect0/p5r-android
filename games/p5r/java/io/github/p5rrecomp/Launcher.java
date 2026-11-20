@@ -342,13 +342,19 @@ public class Launcher extends Activity {
                 new String[] {"Automatic (device language)", "English", "Español", "Français", "Deutsch", "Italiano",
                         "日本語", "한국어", "简体中文", "繁體中文"}, 0));
         options.add(new Option("RESOLUTION", "Resolución", "Resolution",
-                new String[] {"360p", "480p", "720p", "1080p"},
-                new String[] {"360p", "480p", "720p", "1080p"},
-                new String[] {"360p", "480p", "720p", "1080p"}, 2));
+                new String[] {"360p", "480p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)",
+                        "2160p (Experimental)", "Nativa del teléfono (Experimental)"},
+                new String[] {"360p", "480p", "720p", "1080p", "1440p (Experimental)",
+                        "2160p (Experimental)", "Phone native (Experimental)"}, 2));
         options.add(new Option("NX_STRETCH", "Pantalla completa (estirar)", "Fullscreen (stretch)",
                 new String[] {"0", "1"},
                 new String[] {"Desactivada", "Activada"},
                 new String[] {"Off", "On"}, 0));
+        options.add(new Option("NX_ULTRAWIDE", "Pantalla ancha real (Hor+)", "True widescreen (Hor+)",
+                new String[] {"0", "1"},
+                new String[] {"Desactivada", "Automática (más campo de visión)"},
+                new String[] {"Off", "Auto (wider field of view)"}, 0));
         options.add(new Option("NX_FSR", "Superresolución (FSR 1.0)", "Super resolution (FSR 1.0)",
                 new String[] {"0", "1"},
                 new String[] {"Desactivada", "Activada"},
@@ -358,6 +364,10 @@ public class Launcher extends Activity {
                 new String[] {"720p (faster)", "1080p (sharp text)"}, 0));
         options.add(new Option("GRAPHICS", "Gráficos", "Graphics", new String[] {"low", "medium", "high"},
                 new String[] {"Bajos", "Medios", "Altos"}, new String[] {"Low", "Medium", "High"}, 0));
+        options.add(new Option("NX_MAX_ANISO", "Filtro anisotrópico", "Anisotropic filtering",
+                new String[] {"auto", "1", "2", "4", "8", "16"},
+                new String[] {"Automático", "1x (desactivado)", "2x", "4x", "8x", "16x"},
+                new String[] {"Auto", "1x (off)", "2x", "4x", "8x", "16x"}, 0));
         options.add(new Option("NX_FPS_CAP", "Fotogramas por segundo", "Frame rate", new String[] {"30", "60"},
                 new String[] {"30 fps", "60 fps (experimental)"}, new String[] {"30 fps", "60 fps (experimental)"}, 0));
         options.add(new Option("NX_SHADOWS", "Sombras", "Shadows", new String[] {"0", "1"},
@@ -519,7 +529,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.23");
+        version.setText("v0.5.24");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -848,11 +858,12 @@ public class Launcher extends Activity {
     }
 
     String settingsCategoryFor(Option option) {
-        if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key)
+        if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key) || "NX_ULTRAWIDE".equals(option.key)
                 || "NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key))
             return t("Video", "Video");
         if ("GRAPHICS".equals(option.key) || "NX_FPS_CAP".equals(option.key)
-                || "NX_SHADOWS".equals(option.key) || "NX_MALI_LOW_SHADOWS".equals(option.key))
+                || "NX_SHADOWS".equals(option.key) || "NX_MALI_LOW_SHADOWS".equals(option.key)
+                || "NX_MAX_ANISO".equals(option.key))
             return t("Rendimiento", "Performance");
         if ("NX_NO_CROWD".equals(option.key) || "NX_DISABLE_BLOOM".equals(option.key))
             return t("Efectos", "Effects");
@@ -866,7 +877,7 @@ public class Launcher extends Activity {
     String settingsSubcategoryFor(Option option) {
         if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key))
             return t("Pantalla", "Display");
-        if ("NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key))
+        if ("NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key) || "NX_ULTRAWIDE".equals(option.key))
             return t("Calidad de imagen", "Image quality");
         if (settingsCategoryFor(option).equals(t("Rendimiento", "Performance")))
             return t("Rendimiento y gráficos", "Performance and graphics");
@@ -1059,8 +1070,21 @@ public class Launcher extends Activity {
             choice.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     option.pick = selected;
+                    if ("NX_ULTRAWIDE".equals(option.key) && "1".equals(option.values[selected])) {
+                        Option stretch = findOption("NX_STRETCH");
+                        if (stretch != null) stretch.pick = 0;
+                    } else if ("NX_STRETCH".equals(option.key) && "1".equals(option.values[selected])) {
+                        Option ultrawide = findOption("NX_ULTRAWIDE");
+                        if (ultrawide != null) ultrawide.pick = 0;
+                    }
                     save();
                     valueButton.setText(label(option));
+                    for (String siblingKey : new String[] {"NX_STRETCH", "NX_ULTRAWIDE"}) {
+                        if (siblingKey.equals(option.key)) continue;
+                        Option sibling = findOption(siblingKey);
+                        View siblingView = sibling == null ? null : settingsPanel.findViewWithTag(sibling);
+                        if (siblingView instanceof Button) ((Button) siblingView).setText(label(sibling));
+                    }
                     updateButtons(settingsPanel);
                     dialog.dismiss();
                     focusWhenReady(valueButton);
@@ -1235,13 +1259,15 @@ public class Launcher extends Activity {
             String v = config.get(o.key);
             if ("RESOLUTION".equals(o.key) && v == null) {
                 String hh = config.get("NX_HANDHELD");
-                if ("0".equals(hh)) v = "1080p";
-                else {
-                    String r = config.get("resolution");
-                    if (r != null && r.contains("360")) v = "360p";
-                    else if (r != null && r.contains("480")) v = "480p";
-                    else v = "720p";
-                }
+                String r = config.get("resolution");
+                if (r != null && "native".equalsIgnoreCase(r)) v = "native";
+                else if (r != null && r.contains("2160")) v = "2160p";
+                else if (r != null && r.contains("1440")) v = "1440p";
+                else if (r != null && r.contains("1080")) v = "1080p";
+                else if (r != null && r.contains("720")) v = "720p";
+                else if (r != null && r.contains("480")) v = "480p";
+                else if (r != null && r.contains("360")) v = "360p";
+                else v = "0".equals(hh) ? "1080p" : "720p";
             }
             for (int k = 0; v != null && k < o.values.length; k++)
                 if (o.values[k].equals(v)) o.pick = k;
@@ -1639,6 +1665,11 @@ public class Launcher extends Activity {
         if (!dataDir().isDirectory()) return;
         load();
         for (Option o : options) config.put(o.key, o.values[o.pick]);
+        if ("1".equals(config.get("NX_ULTRAWIDE"))) {
+            config.put("NX_STRETCH", "0");
+            Option stretch = findOption("NX_STRETCH");
+            if (stretch != null) stretch.pick = 0;
+        }
         final String res = config.get("RESOLUTION");
         if ("360p".equals(res)) {
             config.put("NX_HANDHELD", "1");
@@ -1650,11 +1681,11 @@ public class Launcher extends Activity {
             config.put("resolution", "480p");
             config.put("NX_RENDER_RES", "480p");
             config.put("NX_RES", "480p");
-        } else if ("1080p".equals(res)) {
+        } else if ("1080p".equals(res) || "1440p".equals(res) || "2160p".equals(res) || "native".equals(res)) {
             config.put("NX_HANDHELD", "0");
-            config.put("resolution", "1080p");
-            config.put("NX_RENDER_RES", "1080p");
-            config.put("NX_RES", "1080p");
+            config.put("resolution", res);
+            config.put("NX_RENDER_RES", res);
+            config.put("NX_RES", res);
         } else {
             config.put("NX_HANDHELD", "1");
             config.put("resolution", "720p");
