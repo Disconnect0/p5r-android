@@ -14,6 +14,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
@@ -33,6 +34,7 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.ImageView;
@@ -104,6 +106,12 @@ public class Launcher extends Activity {
     TextView status;
     Button play;
     boolean settingsVisible;
+    LinearLayout settingsPanel;
+    ScrollView settingsPanelScroll, settingsCategoryScroll;
+    final List<Button> settingsCategoryButtons = new ArrayList<>();
+    final List<Button> settingsNavigation = new ArrayList<>();
+    String[] settingsCategories;
+    int settingsCategoryIndex;
     static final int PICK_ZIP = 1, PICK_FOLDER = 2, PICK_GAME = 3, PICK_KEYS = 4, PICK_ICON = 5, PREPARE = 6, PICK_CPK = 7, PICK_DRIVER = 8;
     static final String GAMEPAD_MAP_KEY = "NX_GAMEPAD_MAP";
     static final String[] GAMEPAD_ACTIONS = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "−", "L3", "R3",
@@ -511,7 +519,7 @@ public class Launcher extends Activity {
         LinearLayout footerInfo = new LinearLayout(this);
         footerInfo.setOrientation(LinearLayout.VERTICAL);
         TextView version = new TextView(this);
-        version.setText("v0.5.19");
+        version.setText("v0.5.22");
         version.setTextColor(Color.WHITE);
         version.setTextSize(15);
         version.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
@@ -647,268 +655,468 @@ public class Launcher extends Activity {
 
     void buildSettings() {
         settingsVisible = true;
+        settingsCategoryIndex = 0;
+        settingsCategories = new String[] {
+                t("Video", "Video"), t("Rendimiento", "Performance"), t("Efectos", "Effects"),
+                t("Interfaz", "Interface"), t("Juego", "Game"), t("Mandos", "Controllers"),
+                t("Datos y herramientas", "Data and tools")
+        };
+        settingsCategoryButtons.clear();
+
         FrameLayout screen = new FrameLayout(this);
         ImageView backdropImage = new ImageView(this);
         int backdropId = getResources().getIdentifier("p5r_launcher_background", "drawable", getPackageName());
         if (backdropId != 0) backdropImage.setImageResource(backdropId);
         backdropImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        screen.addView(backdropImage, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        screen.addView(backdropImage, new FrameLayout.LayoutParams(-1, -1));
         View shade = new View(this);
-        shade.setBackgroundColor(Color.argb(128, 0, 0, 0));
-        screen.addView(shade, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        shade.setBackgroundColor(Color.argb(145, 0, 0, 0));
+        screen.addView(shade, new FrameLayout.LayoutParams(-1, -1));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.argb(115, 5, 5, 8));
-        int pad = dp(24);
-        root.setPadding(pad, pad, pad, pad);
+        root.setPadding(dp(24), dp(18), dp(24), dp(16));
 
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
         Button back = new Button(this);
         back.setText(t("← Inicio", "← Home"));
         styleSettingsButton(back);
-        back.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        root.addView(back, new LinearLayout.LayoutParams(dp(170), dp(52)));
+        back.setGravity(Gravity.CENTER);
+        header.addView(back, new LinearLayout.LayoutParams(dp(150), dp(50)));
         back.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                buildHome();
-            }
+            @Override public void onClick(View v) { buildHome(); }
         });
-
         TextView title = new TextView(this);
         title.setText(t("AJUSTES", "SETTINGS"));
         title.setTextColor(Color.WHITE);
-        title.setTextSize(32);
+        title.setTextSize(30);
         title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
         title.setShadowLayer(dp(2), dp(1), dp(2), Color.BLACK);
-        root.addView(title);
-        View titleAccent = new View(this);
-        titleAccent.setBackgroundColor(Color.rgb(230, 18, 34));
-        LinearLayout.LayoutParams titleAccentParams = new LinearLayout.LayoutParams(dp(78), dp(4));
-        titleAccentParams.topMargin = dp(6);
-        titleAccentParams.bottomMargin = dp(10);
-        root.addView(titleAccent, titleAccentParams);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-2, -2);
+        titleParams.leftMargin = dp(18);
+        header.addView(title, titleParams);
+        root.addView(header);
 
-        addRow(root, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"), t("Elegir", "Choose"),
-                new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        pick(PICK_GAME, "*/*", false);
-                    }
-                });
-        addRow(root, t("Claves (prod.keys)", "Keys (prod.keys)"), t("Elegir", "Choose"), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pick(PICK_KEYS, "*/*", true);
-            }
-        });
-        addRow(root, t("Icono", "Icon"), t("Elegir imagen", "Choose a picture"), new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pick(PICK_ICON, "image/*", false);
-            }
-        });
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams bodyParams = new LinearLayout.LayoutParams(-1, 0, 1);
+        bodyParams.topMargin = dp(14);
+        bodyParams.bottomMargin = dp(8);
+        root.addView(body, bodyParams);
 
-        for (final Option o : options) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(4), 0, dp(4));
-            TextView name = new TextView(this);
-            name.setText(t(o.es, o.en));
-            styleSettingsLabel(name);
-            row.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-            final Button value = new Button(this);
-            value.setAllCaps(false);
-            value.setMinWidth(dp(180));
-            value.setText(label(o));
-            styleSettingsButton(value);
-            row.addView(value);
-            value.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    o.pick = (o.pick + 1) % o.values.length;
-                    value.setText(label(o));
-                    save();
-                    updateButtons(getWindow().getDecorView());
+        settingsCategoryScroll = new ScrollView(this);
+        settingsCategoryScroll.setVerticalScrollBarEnabled(true);
+        settingsCategoryScroll.setScrollbarFadingEnabled(false);
+        LinearLayout categoryList = new LinearLayout(this);
+        categoryList.setOrientation(LinearLayout.VERTICAL);
+        settingsCategoryScroll.addView(categoryList, new ScrollView.LayoutParams(-1, -2));
+        body.addView(settingsCategoryScroll, new LinearLayout.LayoutParams(dp(218), -1));
+        for (int i = 0; i < settingsCategories.length; i++) {
+            final int index = i;
+            Button category = new Button(this);
+            category.setText(settingsCategories[i]);
+            category.setAllCaps(false);
+            category.setTextSize(16);
+            category.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+            category.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            category.setPadding(dp(14), 0, dp(8), 0);
+            category.setFocusable(true);
+            category.setFocusableInTouchMode(true);
+            category.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                @Override public void onFocusChange(View v, boolean focused) {
+                    styleSettingsCategory((Button) v, index == settingsCategoryIndex || focused);
                 }
             });
-            value.setTag(o);
-            root.addView(row);
+            category.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { showSettingsCategory(index); }
+            });
+            LinearLayout.LayoutParams categoryParams = new LinearLayout.LayoutParams(-1, dp(54));
+            categoryParams.bottomMargin = dp(7);
+            categoryList.addView(category, categoryParams);
+            settingsCategoryButtons.add(category);
         }
 
-        addRow(root, t("Asignar botones del mando", "Remap gamepad buttons"), t("Configurar", "Configure"),
+        settingsPanel = new LinearLayout(this);
+        settingsPanel.setOrientation(LinearLayout.VERTICAL);
+        settingsPanel.setPadding(dp(20), dp(16), dp(20), dp(14));
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(Color.argb(242, 8, 7, 9));
+        panelBg.setCornerRadius(dp(5));
+        panelBg.setStroke(dp(2), Color.rgb(230, 18, 34));
+        settingsPanel.setBackground(panelBg);
+        LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(0, -1, 1);
+        panelParams.leftMargin = dp(14);
+        body.addView(settingsPanel, panelParams);
+
+        TextView hint = new TextView(this);
+        hint.setText(t("L1/R1: categorías  ·  ↑/↓: opciones  ·  A: seleccionar  ·  B: volver",
+                "L1/R1: categories  ·  ↑/↓: options  ·  A: select  ·  B: back"));
+        hint.setTextColor(Color.rgb(184, 188, 208));
+        hint.setTextSize(12);
+        root.addView(hint);
+
+        screen.addView(root, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(screen);
+        showSettingsCategory(0);
+    }
+
+    void styleSettingsCategory(Button button, boolean selected) {
+        button.setTextColor(selected ? Color.BLACK : Color.WHITE);
+        button.setBackground(new MenuPanelDrawable(dp(4), selected));
+    }
+
+    void refreshSettingsCategories() {
+        for (int i = 0; i < settingsCategoryButtons.size(); i++) {
+            Button button = settingsCategoryButtons.get(i);
+            styleSettingsCategory(button, i == settingsCategoryIndex || button.hasFocus());
+        }
+    }
+
+    void showSettingsCategory(int index) {
+        if (settingsCategories == null || settingsPanel == null) return;
+        settingsCategoryIndex = Math.max(0, Math.min(index, settingsCategories.length - 1));
+        refreshSettingsCategories();
+        final Button selectedCategory = settingsCategoryButtons.get(settingsCategoryIndex);
+        selectedCategory.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                selectedCategory.getDrawingRect(rect);
+                settingsCategoryScroll.offsetDescendantRectToMyCoords(selectedCategory, rect);
+                int top = settingsCategoryScroll.getScrollY();
+                if (rect.top < top) settingsCategoryScroll.smoothScrollTo(0, rect.top);
+                else if (rect.bottom > top + settingsCategoryScroll.getHeight())
+                    settingsCategoryScroll.smoothScrollTo(0, rect.bottom - settingsCategoryScroll.getHeight());
+            }
+        });
+
+        settingsPanel.removeAllViews();
+        settingsNavigation.clear();
+        TextView heading = new TextView(this);
+        heading.setText(settingsCategories[settingsCategoryIndex].toUpperCase(java.util.Locale.ROOT));
+        heading.setTextColor(Color.WHITE);
+        heading.setTextSize(23);
+        heading.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        settingsPanel.addView(heading);
+        View accent = new View(this);
+        accent.setBackgroundColor(Color.rgb(230, 18, 34));
+        LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(72), dp(4));
+        accentParams.topMargin = dp(8);
+        accentParams.bottomMargin = dp(10);
+        settingsPanel.addView(accent, accentParams);
+
+        settingsPanelScroll = new ScrollView(this);
+        settingsPanelScroll.setFillViewport(false);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        String categoryName = settingsCategories[settingsCategoryIndex];
+        for (final Option option : options) {
+            if (categoryName.equals(settingsCategoryFor(option))) addOptionSettingsRow(rows, option);
+        }
+        if (categoryName.equals(t("Mandos", "Controllers"))) {
+            addSettingsActionRow(rows, t("Asignar botones del mando", "Remap gamepad buttons"),
+                    t("Configurar", "Configure"), new View.OnClickListener() {
+                        @Override public void onClick(View v) { openGamepadMapper(); }
+                    });
+        }
+        if (categoryName.equals(t("Interfaz", "Interface"))) {
+            addSettingsActionRow(rows, t("Posición de los controles", "Touch control positions"),
+                    t("Mover", "Move"), new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            if (!hasAccess()) { askAccess(); return; }
+                            save();
+                            startActivity(new Intent(Launcher.this, ControlsEditor.class));
+                        }
+                    });
+        }
+        if (categoryName.equals(t("Datos y herramientas", "Data and tools"))) addDataToolRows(rows);
+
+        settingsPanelScroll.addView(rows);
+        settingsPanel.addView(settingsPanelScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        updateButtons(settingsPanel);
+        focusFirstSettingsOption();
+    }
+
+    String settingsCategoryFor(Option option) {
+        if ("RESOLUTION".equals(option.key) || "NX_STRETCH".equals(option.key)
+                || "NX_FSR".equals(option.key) || "NX_HUD_1080".equals(option.key))
+            return t("Video", "Video");
+        if ("GRAPHICS".equals(option.key) || "NX_FPS_CAP".equals(option.key)
+                || "NX_SHADOWS".equals(option.key) || "NX_MALI_LOW_SHADOWS".equals(option.key))
+            return t("Rendimiento", "Performance");
+        if ("NX_NO_CROWD".equals(option.key) || "NX_DISABLE_BLOOM".equals(option.key))
+            return t("Efectos", "Effects");
+        if ("NX_SHOW_FPS".equals(option.key) || option.key.startsWith("NX_TOUCH_")
+                || "NX_STICK_SENSITIVITY".equals(option.key) || "NX_CAMERA_SENSITIVITY".equals(option.key))
+            return t("Interfaz", "Interface");
+        if ("language".equals(option.key)) return t("Juego", "Game");
+        return t("Mandos", "Controllers");
+    }
+
+    void addOptionSettingsRow(LinearLayout rows, final Option option) {
+        LinearLayout row = settingsRow(t(option.es, option.en));
+        Button value = new Button(this);
+        value.setAllCaps(false);
+        value.setMinWidth(dp(190));
+        value.setText(label(option));
+        styleSettingsButton(value);
+        value.setTag(option);
+        value.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showOptionMenu(option, (Button) v); }
+        });
+        row.addView(value);
+        rows.addView(row, new LinearLayout.LayoutParams(-1, dp(58)));
+        settingsNavigation.add(value);
+    }
+
+    LinearLayout settingsRow(String name) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(6), dp(4), dp(6), dp(4));
+        TextView label = new TextView(this);
+        label.setText(name);
+        styleSettingsLabel(label);
+        row.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        return row;
+    }
+
+    Button addSettingsActionRow(LinearLayout rows, String label, String action, View.OnClickListener click) {
+        LinearLayout row = settingsRow(label);
+        Button button = new Button(this);
+        button.setAllCaps(false);
+        button.setMinWidth(dp(150));
+        button.setText(action);
+        styleSettingsButton(button);
+        button.setOnClickListener(click);
+        row.addView(button);
+        rows.addView(row, new LinearLayout.LayoutParams(-1, dp(58)));
+        settingsNavigation.add(button);
+        return button;
+    }
+
+    void addDataToolRows(LinearLayout rows) {
+        addSettingsActionRow(rows, t("Archivo del juego (.nsp / .xci)", "Game file (.nsp / .xci)"),
+                t("Elegir", "Choose"), new View.OnClickListener() {
+                    @Override public void onClick(View v) { pick(PICK_GAME, "*/*", false); }
+                });
+        addSettingsActionRow(rows, t("Claves (prod.keys)", "Keys (prod.keys)"), t("Elegir", "Choose"),
                 new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        openGamepadMapper();
+                    @Override public void onClick(View v) { pick(PICK_KEYS, "*/*", true); }
+                });
+        addSettingsActionRow(rows, t("Icono", "Icon"), t("Elegir imagen", "Choose a picture"),
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) { pick(PICK_ICON, "image/*", false); }
+                });
+        addSettingsActionRow(rows, t("Partidas guardadas", "Saves"), t("Importar", "Import"),
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        if (!hasAccess()) { askAccess(); return; }
+                        askImport();
                     }
                 });
+        addSettingsActionRow(rows, t("Partidas guardadas", "Saves"), t("Exportar", "Export"),
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        if (!hasAccess()) { askAccess(); return; }
+                        exportSaves();
+                    }
+                });
+        addSettingsActionRow(rows, t("Traducción / Paquete (.cpk)", "Translation / CPK mod"),
+                t("Importar CPK", "Import CPK"), new View.OnClickListener() {
+                    @Override public void onClick(View v) { pick(PICK_CPK, "*/*", false); }
+                });
 
-        LinearLayout edit = new LinearLayout(this);
-        edit.setOrientation(LinearLayout.HORIZONTAL);
-        edit.setGravity(Gravity.CENTER_VERTICAL);
-        edit.setPadding(0, dp(4), 0, dp(4));
-        TextView editName = new TextView(this);
-        editName.setText(t("Posición de los controles", "Controls position"));
-        styleSettingsLabel(editName);
-        edit.addView(editName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        Button editButton = new Button(this);
-        editButton.setMinWidth(dp(180));
-        editButton.setText(t("Mover", "Move"));
-        styleSettingsButton(editButton);
-        edit.addView(editButton);
-        editButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!hasAccess()) {
-                    askAccess();
-                    return;
-                }
-                save();
-                startActivity(new Intent(Launcher.this, ControlsEditor.class));
-            }
-        });
-        root.addView(edit);
-
-        // Saves: in from a ZIP or a folder (a Switch backup or another player's), out to a ZIP in Download.
-        LinearLayout saves = new LinearLayout(this);
-        saves.setOrientation(LinearLayout.HORIZONTAL);
-        saves.setGravity(Gravity.CENTER_VERTICAL);
-        saves.setPadding(0, dp(4), 0, dp(4));
-        TextView savesName = new TextView(this);
-        savesName.setText(t("Partidas guardadas", "Saves"));
-        styleSettingsLabel(savesName);
-        saves.addView(savesName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        Button importButton = new Button(this);
-        importButton.setMinWidth(dp(88));
-        importButton.setText(t("Importar", "Import"));
-        styleSettingsButton(importButton);
-        saves.addView(importButton);
-        Button exportButton = new Button(this);
-        exportButton.setMinWidth(dp(88));
-        exportButton.setText(t("Exportar", "Export"));
-        styleSettingsButton(exportButton);
-        saves.addView(exportButton);
-        importButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!hasAccess()) {
-                    askAccess();
-                    return;
-                }
-                askImport();
-            }
-        });
-        exportButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!hasAccess()) {
-                    askAccess();
-                    return;
-                }
-                exportSaves();
-            }
-        });
-        root.addView(saves);
-
-        // Translation CPK import
-        LinearLayout transRow = new LinearLayout(this);
-        transRow.setOrientation(LinearLayout.HORIZONTAL);
-        transRow.setGravity(Gravity.CENTER_VERTICAL);
-        transRow.setPadding(0, dp(4), 0, dp(4));
-        TextView transName = new TextView(this);
-        transName.setText(t("Traducción / Paquete (.cpk)", "Translation / CPK mod"));
-        styleSettingsLabel(transName);
-        transRow.addView(transName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        Button transButton = new Button(this);
-        transButton.setMinWidth(dp(180));
-        transButton.setText(t("Importar CPK", "Import CPK"));
-        styleSettingsButton(transButton);
-        transRow.addView(transButton);
-        transButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (!hasAccess()) {
-                    askAccess();
-                    return;
-                }
-                pick(PICK_CPK, "*/*", false);
-            }
-        });
-        root.addView(transRow);
-
-        // Custom GPU driver (e.g. Mesa Turnip for Adreno): imported into the app's private files, opened by the runtime
-        LinearLayout drvRow = new LinearLayout(this);
-        drvRow.setOrientation(LinearLayout.HORIZONTAL);
-        drvRow.setGravity(Gravity.CENTER_VERTICAL);
-        drvRow.setPadding(0, dp(4), 0, dp(4));
+        LinearLayout driverRow = settingsRow(t("Driver de GPU", "GPU driver"));
         driverName = new TextView(this);
         styleSettingsLabel(driverName);
-        drvRow.addView(driverName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        Button drvImport = new Button(this);
-        drvImport.setMinWidth(dp(88));
-        drvImport.setText(t("Importar", "Import"));
-        styleSettingsButton(drvImport);
-        drvRow.addView(drvImport);
-        Button drvRemove = new Button(this);
-        drvRemove.setMinWidth(dp(88));
-        drvRemove.setText(t("Quitar", "Remove"));
-        styleSettingsButton(drvRemove);
-        drvRow.addView(drvRemove);
-        drvImport.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pick(PICK_DRIVER, "*/*", false);
-            }
+        driverRow.addView(driverName, new LinearLayout.LayoutParams(0, -2, 1));
+        Button importDriverButton = new Button(this);
+        importDriverButton.setText(t("Importar", "Import"));
+        styleSettingsButton(importDriverButton);
+        importDriverButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { pick(PICK_DRIVER, "*/*", false); }
         });
-        drvRemove.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                removeDriver();
-            }
-        });
-        root.addView(drvRow);
+        driverRow.addView(importDriverButton);
+        Button removeDriverButton = new Button(this);
+        removeDriverButton.setText(t("Quitar", "Remove"));
+        styleSettingsButton(removeDriverButton);
+        removeDriverButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { removeDriver(); } });
+        LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(-2, -2);
+        removeParams.leftMargin = dp(6);
+        driverRow.addView(removeDriverButton, removeParams);
+        rows.addView(driverRow, new LinearLayout.LayoutParams(-1, dp(58)));
+        settingsNavigation.add(importDriverButton);
+        settingsNavigation.add(removeDriverButton);
         showDriver();
 
-        // Debug logs export
-        LinearLayout logsRow = new LinearLayout(this);
-        logsRow.setOrientation(LinearLayout.HORIZONTAL);
-        logsRow.setGravity(Gravity.CENTER_VERTICAL);
-        logsRow.setPadding(0, dp(4), 0, dp(4));
-        TextView logsName = new TextView(this);
-        logsName.setText(t("Registros de depuración", "Debug logs"));
-        styleSettingsLabel(logsName);
-        logsRow.addView(logsName, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        Button logsButton = new Button(this);
-        logsButton.setMinWidth(dp(180));
-        logsButton.setText(t("Exportar registros", "Export logs"));
-        styleSettingsButton(logsButton);
-        logsRow.addView(logsButton);
-        logsButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                exportLogs();
+        addSettingsActionRow(rows, t("Registros de depuración", "Debug logs"), t("Exportar registros", "Export logs"),
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) { exportLogs(); }
+                });
+    }
+
+    void showOptionMenu(final Option option, final Button valueButton) {
+        final AlertDialog dialog = new AlertDialog.Builder(this).create();
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(22), dp(20), dp(22), dp(18));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(8, 7, 9));
+        background.setCornerRadius(dp(5));
+        background.setStroke(dp(2), Color.rgb(230, 18, 34));
+        card.setBackground(background);
+        TextView title = new TextView(this);
+        title.setText(t(option.es, option.en).toUpperCase(java.util.Locale.ROOT));
+        title.setTextColor(Color.rgb(220, 188, 111));
+        title.setTextSize(21);
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        card.addView(title);
+        View accent = new View(this);
+        accent.setBackgroundColor(Color.rgb(230, 18, 34));
+        LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(70), dp(4));
+        accentParams.topMargin = dp(8);
+        accentParams.bottomMargin = dp(10);
+        card.addView(accent, accentParams);
+        TextView prompt = new TextView(this);
+        prompt.setText(t("Selecciona una opción", "Choose an option"));
+        prompt.setTextColor(Color.rgb(184, 188, 208));
+        prompt.setTextSize(14);
+        LinearLayout.LayoutParams promptParams = new LinearLayout.LayoutParams(-1, -2);
+        promptParams.bottomMargin = dp(8);
+        card.addView(prompt, promptParams);
+
+        ScrollView choiceScroll = new ScrollView(this);
+        LinearLayout choices = new LinearLayout(this);
+        choices.setOrientation(LinearLayout.VERTICAL);
+        final List<Button> choiceButtons = new ArrayList<>();
+        for (int i = 0; i < option.values.length; i++) {
+            final int selected = i;
+            Button choice = new Button(this);
+            choice.setText(t(option.labelsEs[i], option.labelsEn[i]));
+            choice.setAllCaps(false);
+            choice.setTextSize(16);
+            choice.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+            choice.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            choice.setPadding(dp(16), 0, dp(12), 0);
+            choice.setFocusable(true);
+            choice.setFocusableInTouchMode(true);
+            styleOptionChoice(choice, selected == option.pick);
+            choice.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                @Override public void onFocusChange(View v, boolean focused) {
+                    styleOptionChoice((Button) v, selected == option.pick || focused);
+                }
+            });
+            choice.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    option.pick = selected;
+                    save();
+                    valueButton.setText(label(option));
+                    updateButtons(settingsPanel);
+                    dialog.dismiss();
+                    focusWhenReady(valueButton);
+                }
+            });
+            choiceButtons.add(choice);
+            LinearLayout.LayoutParams choiceParams = new LinearLayout.LayoutParams(-1, dp(50));
+            choiceParams.bottomMargin = dp(5);
+            choices.addView(choice, choiceParams);
+        }
+        choiceScroll.addView(choices);
+        int availableHeight = getResources().getDisplayMetrics().heightPixels - dp(190);
+        int listHeight = Math.max(dp(105), Math.min(dp(420), availableHeight));
+        card.addView(choiceScroll, new LinearLayout.LayoutParams(-1, listHeight));
+
+        Button close = new Button(this);
+        close.setText(t("Cancelar", "Cancel"));
+        styleSettingsButton(close);
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(-1, dp(48));
+        closeParams.topMargin = dp(9);
+        card.addView(close, closeParams);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dialog.cancel(); }
+        });
+
+        dialog.setView(card);
+        dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
+            @Override public boolean onKey(DialogInterface d, int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) dialog.cancel();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                        View focused = dialog.getWindow() == null ? null : dialog.getWindow().getDecorView().findFocus();
+                        if (focused != null && focused.isEnabled() && focused.isClickable()) focused.performClick();
+                    }
+                    return true;
+                }
+                return false;
             }
         });
-        root.addView(logsRow);
+        dialog.show();
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int width = Math.min(dp(580), getResources().getDisplayMetrics().widthPixels - dp(36));
+            int height = Math.min(dp(640), getResources().getDisplayMetrics().heightPixels - dp(36));
+            window.setLayout(width, height);
+        }
+        focusWhenReady(choiceButtons.get(option.pick));
+    }
 
-        updateButtons(root);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(Color.TRANSPARENT);
-        scroll.addView(root);
-        screen.addView(scroll, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        setContentView(screen);
-        focusWhenReady(back);
+    void styleOptionChoice(Button button, boolean selected) {
+        button.setTextColor(selected ? Color.BLACK : Color.WHITE);
+        button.setBackground(new MenuPanelDrawable(dp(4), selected));
+    }
+
+    void focusFirstSettingsOption() {
+        if (settingsNavigation.isEmpty()) {
+            focusWhenReady(settingsCategoryButtons.get(settingsCategoryIndex));
+            return;
+        }
+        focusWhenReady(settingsNavigation.get(0));
+    }
+
+    void moveSettingsCategory(int direction) {
+        int next = (settingsCategoryIndex + direction + settingsCategories.length) % settingsCategories.length;
+        showSettingsCategory(next);
+    }
+
+    void moveSettingsVertical(int direction) {
+        if (settingsNavigation.isEmpty()) return;
+        int current = settingsNavigation.indexOf(getCurrentFocus());
+        int next = current < 0 ? (direction > 0 ? 0 : settingsNavigation.size() - 1)
+                : (current + direction + settingsNavigation.size()) % settingsNavigation.size();
+        final View target = settingsNavigation.get(next);
+        target.requestFocus();
+        target.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                target.getDrawingRect(rect);
+                settingsPanelScroll.offsetDescendantRectToMyCoords(target, rect);
+                int top = settingsPanelScroll.getScrollY();
+                int bottom = top + settingsPanelScroll.getHeight();
+                if (rect.top < top) settingsPanelScroll.smoothScrollTo(0, rect.top);
+                else if (rect.bottom > bottom) settingsPanelScroll.smoothScrollTo(0, rect.bottom - settingsPanelScroll.getHeight());
+            }
+        });
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         int keyCode = event.getKeyCode();
+        if (settingsVisible && (keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_7
+                || keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_BUTTON_8)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                moveSettingsCategory(keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_7 ? -1 : 1);
+            return true;
+        }
+        if (settingsVisible && (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                moveSettingsVertical(keyCode == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1);
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_BUTTON_A) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 View focused = getCurrentFocus();
