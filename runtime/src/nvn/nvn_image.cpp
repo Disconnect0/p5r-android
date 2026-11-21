@@ -1,6 +1,7 @@
 // The VkImage behind an NVN texture, and its layout transitions (split from nvn_vk.cpp). Under the GPU lock.
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <tuple>
@@ -97,12 +98,29 @@ bool hud_1080_texture(const Texture& t) {
     return true;
 }
 
-int32_t hud_quarters() {
-    static const int32_t q = [] {
+int32_t hud_scale_units() {
+    static const int32_t units = [] {
         const char* e = std::getenv("NX_HUD_RES");
-        return e && std::atoi(e) == 900 ? 5 : 6;
+        if (!e || !e[0]) return 18;  // legacy NX_HUD_1080=1
+        if (std::strcmp(e, "native") == 0) {
+            uint32_t w = 0, h = 0;
+            plat::screen_size(w, h);
+            return std::clamp(int32_t((h + 30) / 60), 6, 36);
+        }
+        const int height = std::atoi(e);
+        switch (height) {
+            case 360: return 6;
+            case 480: return 8;
+            case 540: return 9;
+            case 720: return 12;
+            case 900: return 15;
+            case 1080: return 18;
+            case 1440: return 24;
+            case 2160: return 36;
+            default: return 18;
+        }
     }();
-    return q;
+    return units;
 }
 
 namespace {

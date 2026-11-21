@@ -68,23 +68,20 @@ inline int32_t low_3d_down_end(int64_t v) {
 inline float low_3d_scale() { return float(low_3d_num()) / float(low_3d_den()); }
 bool low_3d_texture(const Texture& t);
 
-// NX_HUD_1080 (nvn_image.cpp): render targets of the handheld screen's size, 1280x720, are made at 3/2 of it,
-// 1920x1080, so the 2D layers drawn into them (a game's HUD, menus and the window) reach the screen at the size their
-// art was made for while the 3D keeps its own targets. NX_HUD_RES=900: at 5/4 instead, 1600x900 (a third fewer pixels
-// for the GPU, art shrunk 1.2x instead of 1.5x). Guest pixel spans on such an image (viewports, scissors, copy and
-// clear rectangles, the window crop) are scaled the same way: offsets rounded down, ends up.
+// NX_HUD_RES (nvn_image.cpp): scale 1280x720 HUD targets to a selected interface resolution; scale guest spans,
+// viewports, scissors, copies, clears, and the window crop with the same ratio.
 struct Texture;
 bool hud_1080_texture(const Texture& t);
-int32_t hud_quarters();  // the scale in quarters: 6 (1080p) or 5 (900p)
+int32_t hud_scale_units();  // scale in twelfths: 18 at 1080p, 24 at 1440p, 36 at 2160p
 inline int32_t hud_up(int64_t v) {
-    const int64_t r = (v * hud_quarters()) >> 2;
+    const int64_t r = (v * hud_scale_units()) / 12;
     return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
 }
 inline int32_t hud_up_end(int64_t v) {
-    const int64_t r = (v * hud_quarters() + 3) >> 2;
+    const int64_t r = (v * hud_scale_units() + 11) / 12;
     return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
 }
-inline float hud_scale() { return float(hud_quarters()) / 4.0f; }
+inline float hud_scale() { return float(hud_scale_units()) / 12.0f; }
 
 VkDevice vk_device();
 bool vk_depth_clip_control();

@@ -672,16 +672,20 @@ public class Launcher extends Activity {
                 "Resolución 3D", "3D Resolution",
                 "Escala de renderizado 3D (la interfaz se mantiene nítida)",
                 "3D scene render scale (UI stays crisp)",
-                new String[] {"360p", "480p", "540p", "720p", "1080p"},
-                new String[] {"360P", "480P", "540P", "720P", "1080P"},
-                new String[] {"360P", "480P", "540P", "720P", "1080P"}, 3, false));
-        options.add(new Option(TAB_DISPLAY, "NX_HUD_1080",
+                new String[] {"360p", "480p", "540p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360P", "480P", "540P", "720P", "1080P", "1440P · EXPERIMENTAL",
+                        "2160P · EXPERIMENTAL", "NATIVA DEL TELÉFONO · EXPERIMENTAL"},
+                new String[] {"360P", "480P", "540P", "720P", "1080P", "1440P · EXPERIMENTAL",
+                        "2160P · EXPERIMENTAL", "PHONE NATIVE · EXPERIMENTAL"}, 3, true));
+        options.add(new Option(TAB_DISPLAY, "NX_HUD_RES",
                 "Resolución de interfaz", "Interface Resolution",
-                "720p es más rápido; 1080p hace el texto más fino",
-                "720p is faster; 1080p renders sharper menus and portraits",
-                new String[] {"0", "1"},
-                new String[] {"720P", "1080P"},
-                new String[] {"720P", "1080P"}, 0, false));
+                "720p es más rápido; las resoluciones superiores son experimentales",
+                "720p is faster; higher interface resolutions are experimental",
+                new String[] {"360p", "480p", "720p", "1080p", "1440p", "2160p", "native"},
+                new String[] {"360P", "480P", "720P", "1080P", "1440P · EXPERIMENTAL",
+                        "2160P · EXPERIMENTAL", "NATIVA DEL TELÉFONO · EXPERIMENTAL"},
+                new String[] {"360P", "480P", "720P", "1080P", "1440P · EXPERIMENTAL",
+                        "2160P · EXPERIMENTAL", "PHONE NATIVE · EXPERIMENTAL"}, 2, true));
         options.add(new Option(TAB_DISPLAY, "SHARPEN_MODE",
                 "Nitidez y reescalado", "Sharpening & Upscaling",
                 "CAS es ligero y sin halos; FSR 1.0 reescala a resolución nativa",
@@ -2398,6 +2402,8 @@ public class Launcher extends Activity {
         load();
         for (Option o : options) {
             String v = config.get(o.key);
+            if ("NX_HUD_RES".equals(o.key) && v == null)
+                v = "1".equals(config.get("NX_HUD_1080")) ? "1080p" : "720p";
             if ("RESOLUTION".equals(o.key) && v == null) {
                 String hh = config.get("NX_HANDHELD");
                 if ("0".equals(hh)) v = "1080p";
@@ -2748,33 +2754,14 @@ public class Launcher extends Activity {
         if (!dataDir().isDirectory()) return;
         load();
         for (Option o : options) config.put(o.key, o.values[o.pick]);
-        final String res = config.get("RESOLUTION");
-        if ("360p".equals(res)) {
-            config.put("NX_HANDHELD", "1");
-            config.put("resolution", "360p");
-            config.put("NX_RENDER_RES", "360p");
-            config.put("NX_RES", "360p");
-        } else if ("480p".equals(res)) {
-            config.put("NX_HANDHELD", "1");
-            config.put("resolution", "480p");
-            config.put("NX_RENDER_RES", "480p");
-            config.put("NX_RES", "480p");
-        } else if ("540p".equals(res)) {
-            config.put("NX_HANDHELD", "1");
-            config.put("resolution", "540p");
-            config.put("NX_RENDER_RES", "540p");
-            config.put("NX_RES", "540p");
-        } else if ("1080p".equals(res)) {
-            config.put("NX_HANDHELD", "0");
-            config.put("resolution", "1080p");
-            config.put("NX_RENDER_RES", "1080p");
-            config.put("NX_RES", "1080p");
-        } else {
-            config.put("NX_HANDHELD", "1");
-            config.put("resolution", "720p");
-            config.put("NX_RENDER_RES", "720p");
-            config.put("NX_RES", "720p");
-        }
+        String res = config.get("RESOLUTION");
+        if (res == null || res.isEmpty()) res = "720p";
+        config.put("NX_HANDHELD", ("360p".equals(res) || "480p".equals(res)
+                || "540p".equals(res) || "720p".equals(res)) ? "1" : "0");
+        config.put("resolution", res);
+        config.put("NX_RENDER_RES", res);
+        config.put("NX_RES", res);
+        config.put("NX_HUD_1080", "720p".equals(config.get("NX_HUD_RES")) ? "0" : "1");
         for (String k : new String[] {"RENDER_SCALE", "NX_ANISO_MAX", "NX_LOD_BIAS"}) config.remove(k);
         if ("auto".equals(config.get("NX_MAX_ANISO"))) config.remove("NX_MAX_ANISO");
         final String sharpMode = config.get("SHARPEN_MODE");

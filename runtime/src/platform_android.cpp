@@ -488,7 +488,7 @@ void screen_size(uint32_t& w, uint32_t& h) {
 }
 
 // The render size: resolution=WxH if set, else the screen's size times the render scale (render_scale=0.5..1, or
-// the GPU's default), never taller than 1080 (the game's art is made for 720p/1080p; more only costs GPU time).
+// the GPU's default). Experimental 1440p, 2160p, and native choices can exceed the game's usual 1080p target.
 void window_size(uint32_t& w, uint32_t& h) {
     uint32_t sw = 0, sh = 0;
     screen_size(sw, sh);
@@ -500,12 +500,15 @@ void window_size(uint32_t& w, uint32_t& h) {
     std::string hud1080 = setting("NX_HUD_1080");
     const uint32_t ui_h = (hud1080 == "1") ? 1080u : 720u;
 
-    auto parse_target_h = [ui_h](const std::string& s) -> uint32_t {
+    auto parse_target_h = [ui_h, sh](const std::string& s) -> uint32_t {
         if (s == "360p" || s == "360") return ui_h;
         if (s == "480p" || s == "480") return ui_h;
         if (s == "540p" || s == "540") return ui_h;
         if (s == "720p" || s == "720") return ui_h;
         if (s == "1080p" || s == "1080") return 1080;
+        if (s == "1440p" || s == "1440") return 1440;
+        if (s == "2160p" || s == "2160") return 2160;
+        if (s == "native") return sh;
         unsigned cw = 0, ch = 0;
         if (!s.empty() && std::sscanf(s.c_str(), "%ux%u", &cw, &ch) == 2 && ch) return ch;
         return 0;

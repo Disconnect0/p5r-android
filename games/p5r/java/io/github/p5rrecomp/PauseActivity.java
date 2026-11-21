@@ -5,7 +5,6 @@ import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -70,6 +69,12 @@ public final class PauseActivity extends Activity {
     ScrollView categoryScroll, optionScroll;
     Button resumeButton, quitButton, firstOptionButton;
     int selectedCategory;
+    AlertDialog choiceDialog;
+    ScrollView choiceDialogScroll;
+    List<Button> choiceDialogRows;
+    Choice choiceDialogChoice;
+    Button choiceDialogValue;
+    int choiceDialogSelection;
 
     static String t(String es, String en) { return Lang.t(es, en); }
 
@@ -112,8 +117,9 @@ public final class PauseActivity extends Activity {
                 new String[] {"Centrada en 16:9", "Pantalla completa"}, new String[] {"Centered 16:9", "Full width"}));
 
         choices.add(new Choice(categories[1], "GRAPHICS", "Calidad de gráficos", "Graphics quality",
-                new String[] {"low", "medium", "high"}, new String[] {"Bajos", "Medios", "Altos"},
-                new String[] {"Low", "Medium", "High"}));
+                new String[] {"low", "medium", "high", "sharp"},
+                new String[] {"Bajos", "Medios", "Altos", "Nítido"},
+                new String[] {"Low", "Medium", "High", "Sharp"}));
         choices.add(new Choice(categories[1], "NX_MAX_ANISO", "Filtro anisotrópico", "Anisotropic filtering",
                 new String[] {"auto", "1", "2", "4", "8", "16"},
                 new String[] {"Automático", "1x · desactivado", "2x", "4x", "8x", "16x"},
@@ -134,12 +140,6 @@ public final class PauseActivity extends Activity {
                 new String[] {"Enabled", "Disabled · more FPS"}));
 
         choices.add(toggle(categories[3], "NX_SHOW_FPS", "Contador de FPS", "FPS counter", false));
-        choices.add(metric("NX_FPS_SHOW_GPU", "Controlador gráfico", "GPU driver"));
-        choices.add(metric("NX_FPS_SHOW_BATTERY_TEMP", "Temperatura de batería", "Battery temperature"));
-        choices.add(metric("NX_FPS_SHOW_CPU_TEMP", "Temperatura de CPU", "CPU temperature"));
-        choices.add(metric("NX_FPS_SHOW_CPU", "Uso del procesador", "CPU usage"));
-        choices.add(metric("NX_FPS_SHOW_RAM", "Uso de RAM", "RAM usage"));
-        choices.add(metric("NX_FPS_SHOW_GPU_LOAD", "Uso de GPU", "GPU usage"));
         choices.add(new Choice(categories[3], "NX_TOUCH_SHOW", "Controles táctiles", "Touch controls",
                 new String[] {"1", "0"}, new String[] {"Activados", "Desactivados"}, new String[] {"On", "Off"}));
         choices.add(toggle(categories[3], "NX_TOUCH_HIDE", "Ocultar controles táctiles", "Hide touch controls", false));
@@ -176,7 +176,7 @@ public final class PauseActivity extends Activity {
 
     void buildScreen() {
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.argb(226, 10, 10, 12));
+        frame.setBackgroundColor(P5Theme.SCRIM_SETTINGS);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(28), dp(18), dp(28), dp(16));
@@ -186,6 +186,7 @@ public final class PauseActivity extends Activity {
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
         TextView title = text("PERSONA 5 ROYAL", YELLOW, 27, true);
+        title.setTypeface(P5Theme.displayBold());
         titleBox.addView(title);
         titleBox.addView(text(t("EN PAUSA", "PAUSED"), MUTED, 15, true));
         header.addView(titleBox, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -226,7 +227,7 @@ public final class PauseActivity extends Activity {
         GradientDrawable panelBg = new GradientDrawable();
         panelBg.setColor(P5Theme.INK_SURFACE);
         panelBg.setCornerRadius(dp(2));
-        panelBg.setStroke(dp(2), RED);
+        panelBg.setStroke(dp(1), P5Theme.BORDER_SUBTLE);
         settingsPanel.setBackground(panelBg);
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.MATCH_PARENT, 1);
@@ -302,12 +303,16 @@ public final class PauseActivity extends Activity {
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(8), dp(6), dp(8), dp(6));
             TextView label = text(t(choice.es, choice.en), WHITE, 16, false);
+            label.setTypeface(P5Theme.condensedBold());
             row.addView(label, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
             Button value = actionButton(choiceLabel(choice), false);
             value.setTextSize(15);
             value.setMinWidth(dp(150));
             value.setOnClickListener(new View.OnClickListener() {
-                @Override public void onClick(View v) { advance(choice, (Button) v); }
+                @Override public void onClick(View v) {
+                    if (choice.values.length > 2) showChoicePicker(choice, (Button) v);
+                    else advance(choice, (Button) v);
+                }
             });
             if ("NX_MALI_LOW_SHADOWS".equals(choice.key) && !"1".equals(config.get("NX_SHADOWS"))) {
                 value.setEnabled(false);
@@ -359,12 +364,19 @@ public final class PauseActivity extends Activity {
         rows.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)));
     }
 
-    void advance(Choice choice, Button valueButton) {
-        Map<String, String> previous = new LinkedHashMap<>(config);
+    int currentChoiceIndex(Choice choice) {
         String current = config.get(choice.key);
-        int index = 0;
-        for (int i = 0; i < choice.values.length; i++) if (choice.values[i].equals(current)) index = i;
-        config.put(choice.key, choice.values[(index + 1) % choice.values.length]);
+        for (int i = 0; i < choice.values.length; i++) if (choice.values[i].equals(current)) return i;
+        return 0;
+    }
+
+    void advance(Choice choice, Button valueButton) {
+        selectChoice(choice, (currentChoiceIndex(choice) + 1) % choice.values.length, valueButton);
+    }
+
+    boolean selectChoice(Choice choice, int index, Button valueButton) {
+        Map<String, String> previous = new LinkedHashMap<>(config);
+        config.put(choice.key, choice.values[index]);
         if ("NX_ULTRAWIDE".equals(choice.key) && "1".equals(config.get(choice.key))) {
             config.put("NX_STRETCH", "0");
         } else if ("NX_STRETCH".equals(choice.key) && "1".equals(config.get(choice.key))) {
@@ -382,6 +394,7 @@ public final class PauseActivity extends Activity {
             String preset = config.get(choice.key);
             if ("low".equals(preset)) config.put("NX_LOD_BIAS", "1");
             else if ("medium".equals(preset)) config.put("NX_LOD_BIAS", "0.5");
+            else if ("sharp".equals(preset)) config.put("NX_LOD_BIAS", "-0.5");
         }
         if (persist()) {
             valueButton.setText(choiceLabel(choice));
@@ -406,9 +419,11 @@ public final class PauseActivity extends Activity {
                     quality.setAlpha(enabled ? 1.0f : 0.4f);
                 }
             }
+            return true;
         } else {
             config.clear();
             config.putAll(previous);
+            return false;
         }
     }
 
@@ -417,6 +432,117 @@ public final class PauseActivity extends Activity {
         for (int i = 0; i < choice.values.length; i++)
             if (choice.values[i].equals(current)) return Lang.t(choice.labelsEs[i], choice.labelsEn[i]);
         return Lang.t(choice.labelsEs[0], choice.labelsEn[0]);
+    }
+
+    void showChoicePicker(final Choice choice, final Button valueButton) {
+        choiceDialogChoice = choice;
+        choiceDialogValue = valueButton;
+        choiceDialogSelection = currentChoiceIndex(choice);
+        choiceDialogRows = new ArrayList<>();
+        final AlertDialog dialog = new AlertDialog.Builder(this).create();
+        choiceDialog = dialog;
+        LinearLayout card = dialogCard();
+        card.addView(text(Lang.t(choice.es, choice.en).toUpperCase(java.util.Locale.ROOT), YELLOW, 21, true));
+        card.addView(dialogAccent());
+        TextView description = text(t("Selecciona una opción. Usa ↑/↓ o el deslizador para recorrer la lista.",
+                "Choose an option. Use ↑/↓ or the scrollbar to browse the list."), MUTED, 14, false);
+        LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(-1, -2);
+        descriptionParams.bottomMargin = dp(8);
+        card.addView(description, descriptionParams);
+
+        choiceDialogScroll = new ScrollView(this);
+        choiceDialogScroll.setFillViewport(false);
+        choiceDialogScroll.setVerticalScrollBarEnabled(true);
+        choiceDialogScroll.setScrollbarFadingEnabled(false);
+        choiceDialogScroll.setScrollBarStyle(View.SCROLLBARS_INSIDE_INSET);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < choice.values.length; i++) {
+            final int index = i;
+            Button option = actionButton(Lang.t(choice.labelsEs[i], choice.labelsEn[i]), i == choiceDialogSelection);
+            option.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            option.setPadding(dp(14), 0, dp(10), 0);
+            option.setTextSize(15);
+            option.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    choiceDialogSelection = index;
+                    if (selectChoice(choice, index, valueButton)) dialog.dismiss();
+                }
+            });
+            choiceDialogRows.add(option);
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(48));
+            rowParams.bottomMargin = dp(5);
+            list.addView(option, rowParams);
+        }
+        choiceDialogScroll.addView(list);
+        int visibleRows = Math.max(2, Math.min(5, choice.values.length - 1));
+        int availableHeight = getResources().getDisplayMetrics().heightPixels - dp(216);
+        int listHeight = Math.min(dp(visibleRows * 53), Math.max(dp(96), availableHeight));
+        card.addView(choiceDialogScroll, new LinearLayout.LayoutParams(-1, listHeight));
+
+        Button close = actionButton(t("Cerrar", "Close"), false);
+        close.setTextSize(14);
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(-2, dp(44));
+        closeParams.topMargin = dp(8);
+        closeParams.gravity = Gravity.END;
+        card.addView(close, closeParams);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { dialog.dismiss(); }
+        });
+        dialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override public void onDismiss(DialogInterface d) {
+                if (choiceDialog == dialog) {
+                    choiceDialog = null;
+                    choiceDialogScroll = null;
+                    choiceDialogRows = null;
+                    choiceDialogChoice = null;
+                    choiceDialogValue = null;
+                }
+            }
+        });
+        dialog.setView(card);
+        dialog.show();
+        styleDialogWindow(dialog, 600, Math.round(listHeight / getResources().getDisplayMetrics().density) + 180);
+        focusChoiceDialogRow(choiceDialogSelection);
+    }
+
+    void focusChoiceDialogRow(int index) {
+        if (choiceDialogRows == null || choiceDialogRows.isEmpty()) return;
+        choiceDialogSelection = (index + choiceDialogRows.size()) % choiceDialogRows.size();
+        dialogCardFocus(choiceDialogRows, choiceDialogSelection);
+        final Button target = choiceDialogRows.get(choiceDialogSelection);
+        final ScrollView scroll = choiceDialogScroll;
+        if (scroll != null) target.post(new Runnable() {
+            @Override public void run() {
+                android.graphics.Rect rect = new android.graphics.Rect();
+                target.getDrawingRect(rect);
+                scroll.offsetDescendantRectToMyCoords(target, rect);
+                int top = scroll.getScrollY();
+                int bottom = top + scroll.getHeight();
+                if (rect.top < top) scroll.smoothScrollTo(0, rect.top);
+                else if (rect.bottom > bottom) scroll.smoothScrollTo(0, rect.bottom - scroll.getHeight());
+            }
+        });
+    }
+
+    boolean handleChoiceDialogKey(KeyEvent event) {
+        if (choiceDialog == null || !choiceDialog.isShowing()) return false;
+        int key = event.getKeyCode();
+        if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN)
+                focusChoiceDialogRow(choiceDialogSelection + (key == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1));
+            return true;
+        }
+        if (key == KeyEvent.KEYCODE_BUTTON_A) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && choiceDialogRows != null)
+                choiceDialogRows.get(choiceDialogSelection).performClick();
+            return true;
+        }
+        if (key == KeyEvent.KEYCODE_BUTTON_B || key == KeyEvent.KEYCODE_BACK || key == KeyEvent.KEYCODE_ESCAPE) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) choiceDialog.cancel();
+            return true;
+        }
+        return false;
     }
 
     boolean persist() {
@@ -433,16 +559,11 @@ public final class PauseActivity extends Activity {
 
     void applyRuntimeOption(String key) {
         if ("NX_GAMEPAD_LAYOUT".equals(key) || "NX_GAMEPAD_MAP".equals(key)
-                || "NX_SHOW_FPS".equals(key) || key.startsWith("NX_FPS_SHOW_") || key.startsWith("NX_TOUCH_")
+                || "NX_SHOW_FPS".equals(key) || key.startsWith("NX_TOUCH_")
                 || "NX_STICK_SENSITIVITY".equals(key) || "NX_CAMERA_SENSITIVITY".equals(key)) {
             String value = config.get(key);
             updateRuntimeOption(key, value == null ? "" : value);
         }
-    }
-
-    Choice metric(String key, String es, String en) {
-        return new Choice(categories[3], key, es, en, new String[] {"0", "1"},
-                new String[] {"Oculto", "Mostrar"}, new String[] {"Hidden", "Show"});
     }
 
     void showGamepadMapper(final int[] map) {
@@ -561,8 +682,8 @@ public final class PauseActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(22), dp(20), dp(22), dp(18));
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.rgb(8, 7, 9));
-        background.setCornerRadius(dp(5));
+        background.setColor(P5Theme.INK_BLACK);
+        background.setCornerRadius(dp(1));
         background.setStroke(dp(2), RED);
         card.setBackground(background);
         return card;
@@ -714,6 +835,7 @@ public final class PauseActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (handleChoiceDialogKey(event)) return true;
         int key = event.getKeyCode();
         if (key == KeyEvent.KEYCODE_BUTTON_L1 || key == KeyEvent.KEYCODE_BUTTON_7
                 || key == KeyEvent.KEYCODE_BUTTON_R1 || key == KeyEvent.KEYCODE_BUTTON_8) {
@@ -754,7 +876,7 @@ public final class PauseActivity extends Activity {
         b.setAllCaps(false);
         b.setTextColor(selected ? Color.BLACK : WHITE);
         b.setTextSize(16);
-        b.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        b.setTypeface(P5Theme.condensedBold());
         b.setMinHeight(dp(48));
         b.setFocusable(true);
         b.setFocusableInTouchMode(true);
@@ -864,7 +986,7 @@ public final class PauseActivity extends Activity {
         v.setText(value);
         v.setTextColor(color);
         v.setTextSize(size);
-        if (bold) v.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        v.setTypeface(bold ? P5Theme.condensedBold() : P5Theme.bodyRegular());
         return v;
     }
 

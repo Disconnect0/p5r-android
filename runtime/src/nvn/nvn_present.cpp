@@ -132,7 +132,6 @@ struct Pass {
     bool cfg_fsr = false;
     bool cfg_cas = false;
     bool cfg_fxaa = false;
-    bool cfg_show_fps = false;
     int cfg_color = 0;
     float cfg_cas_strength = 0.72f;
     float cfg_fsr_sharp = 0.2f;
@@ -183,8 +182,6 @@ void refresh_present_config() {
     g.cfg_fsr = read_fsr_env();
     g.cfg_cas = read_cas_env();
     g.cfg_fxaa = read_fxaa_env();
-    const char* fps_e = std::getenv("NX_SHOW_FPS");
-    g.cfg_show_fps = fps_e && fps_e[0] == '1';
     g.cfg_color = read_color_profile_env();
     g.cfg_cas_strength = read_cas_strength_env();
     g.cfg_fsr_sharp = read_fsr_sharpness_env();
@@ -454,7 +451,9 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     plat::OverlayShape shapes[kOverlayMax];
     size_t count = plat::touch_overlay(shapes, kOverlayMax);
     // NX_SHOW_FPS=1 (the launcher's FPS counter, off by default): presents over the last second, top left.
-    if (g.cfg_show_fps && count < kOverlayMax) {
+    // Read this live because PauseActivity can change the FPS monitor while the runtime is already running.
+    const char* show_fps = std::getenv("NX_SHOW_FPS");
+    if (show_fps && show_fps[0] == '1' && count < kOverlayMax) {
         static uint64_t t0 = plat::monotonic_ns(), frames = 0;
         static uint32_t fps = 0;
         uint64_t now = plat::monotonic_ns();
