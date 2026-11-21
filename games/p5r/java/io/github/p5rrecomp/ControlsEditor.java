@@ -5,12 +5,12 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.widget.Button;
+import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -54,6 +54,12 @@ public class ControlsEditor extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        if (Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+        }
         Map<String, String> config = Launcher.readConfig(configFile());
         try {
             sizeScale = Math.max(50, Math.min(160, Integer.parseInt(config.get("NX_TOUCH_SIZE")))) / 100f;
@@ -63,26 +69,39 @@ public class ControlsEditor extends Activity {
         parse(config.get("NX_TOUCH_LAYOUT"));
 
         FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(20, 4, 6));
+        root.setBackgroundColor(P5Theme.INK_BLACK);
         view = new EditorView(this);
         root.addView(view, new FrameLayout.LayoutParams(-1, -1));
 
-        LinearLayout middle = new LinearLayout(this);
+        P5Views.AngledRowLayout middle = new P5Views.AngledRowLayout(this);
         middle.setOrientation(LinearLayout.VERTICAL);
         middle.setGravity(Gravity.CENTER_HORIZONTAL);
+        middle.setPadding(dp(22), dp(14), dp(22), dp(14));
+
+        TextView helpTitle = new TextView(this);
+        helpTitle.setText(t("EDITOR DE CONTROLES", "CONTROLS LAYOUT"));
+        helpTitle.setTypeface(P5Theme.displayBold());
+        helpTitle.setTextColor(P5Theme.PAPER_WHITE);
+        helpTitle.setTextSize(15f);
+        helpTitle.setGravity(Gravity.CENTER);
+        middle.addView(helpTitle);
+
         TextView help = new TextView(this);
         help.setText(t("Arrastra los controles a donde quieras.\nLa cruceta y A B X Y se mueven juntos. En rojo: se tocan.",
-                "Drag the controls where you want them.\nThe d-pad and A B X Y move together. Red: they touch."));
-        help.setTextColor(Color.rgb(230, 230, 230));
-        help.setTextSize(15);
+                "Drag controls where you want them.\nD-pad and A B X Y move together. Red: overlapping."));
+        help.setTypeface(P5Theme.bodyRegular());
+        help.setTextColor(P5Theme.MUTED_TEXT);
+        help.setTextSize(12.5f);
         help.setGravity(Gravity.CENTER);
+        help.setPadding(0, dp(4), 0, dp(12));
         middle.addView(help);
+
         LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER);
-        bar.setPadding(0, dp(12), 0, 0);
-        Button restore = button(t("Restablecer", "Reset"), Color.rgb(70, 70, 70));
-        Button cancel = button(t("Cancelar", "Cancel"), Color.rgb(70, 70, 70));
-        Button save = button(t("Guardar", "Save"), Color.rgb(230, 0, 18));
+        P5Views.SlashButton restore = new P5Views.SlashButton(this, t("RESTABLECER", "RESET"), false, 40);
+        P5Views.SlashButton cancel = new P5Views.SlashButton(this, t("CANCELAR", "CANCEL"), false, 40);
+        P5Views.SlashButton save = new P5Views.SlashButton(this, t("GUARDAR", "SAVE"), true, 40);
         restore.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -100,7 +119,6 @@ public class ControlsEditor extends Activity {
                 Map<String, String> config = Launcher.readConfig(configFile());
                 config.put("NX_TOUCH_LAYOUT", serialize());
                 if (Launcher.writeConfig(configFile(), config)) {
-                    PauseActivity.updateRuntimeOption("NX_TOUCH_LAYOUT", config.get("NX_TOUCH_LAYOUT"));
                     Toast.makeText(ControlsEditor.this, t("Controles guardados", "Controls saved"), Toast.LENGTH_SHORT).show();
                     finish();
                 } else {
@@ -109,10 +127,10 @@ public class ControlsEditor extends Activity {
                 }
             }
         });
-        for (Button b : new Button[] {restore, cancel, save}) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-            lp.leftMargin = dp(6);
-            lp.rightMargin = dp(6);
+        for (P5Views.SlashButton b : new P5Views.SlashButton[] {restore, cancel, save}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(40));
+            lp.leftMargin = dp(4);
+            lp.rightMargin = dp(4);
             bar.addView(b, lp);
         }
         middle.addView(bar);
@@ -127,21 +145,12 @@ public class ControlsEditor extends Activity {
         if (focus) hideSystemBars();
     }
 
+    @SuppressWarnings("deprecation")
     void hideSystemBars() {  // as the game does (runtime/src/platform_android.cpp: 0x1706)
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_FULLSCREEN);
-    }
-
-    Button button(String text, int color) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setBackgroundColor(color);
-        b.setMinWidth(dp(120));
-        return b;
     }
 
     void reset(boolean mirrored) {
@@ -183,7 +192,7 @@ public class ControlsEditor extends Activity {
 
         EditorView(Context c) {
             super(c);
-            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            paint.setTypeface(P5Theme.condensedBold());
         }
 
         float radius(int i) {  // pixels: the stick's ring keeps its size, the buttons follow NX_TOUCH_SIZE
@@ -202,18 +211,29 @@ public class ControlsEditor extends Activity {
         @Override
         protected void onDraw(Canvas c) {
             float w = getWidth(), h = getHeight();
+
+            // Subtle alignment grid guides for symmetric thumb placement
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(1f, dp(1)));
+            paint.setColor(Color.argb(28, 255, 255, 255));
+            c.drawLine(w * 0.5f, 0, w * 0.5f, h, paint);
+            c.drawLine(0, h * 0.5f, w, h * 0.5f, paint);
+            paint.setColor(Color.argb(14, 255, 255, 255));
+            c.drawLine(w * 0.25f, 0, w * 0.25f, h, paint);
+            c.drawLine(w * 0.75f, 0, w * 0.75f, h, paint);
+
             for (int i = 0; i < NAMES.length; i++) {
                 float cx = pos[i][0] * w, cy = pos[i][1] * h, r = radius(i);
                 boolean bad = touches(i), held = GROUP[i] == group;
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(bad ? Color.argb(150, 230, 0, 18) : Color.argb(held ? 140 : 80, 255, 255, 255));
+                paint.setColor(bad ? Color.argb(165, 230, 0, 18) : Color.argb(held ? 145 : 72, 245, 245, 245));
                 c.drawCircle(cx, cy, r, paint);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(dp(2));
-                paint.setColor(bad ? Color.rgb(255, 60, 60) : Color.argb(220, 255, 255, 255));
+                paint.setColor(bad ? P5Theme.P5_RED : (held ? P5Theme.ACID_YELLOW : Color.argb(220, 245, 245, 245)));
                 c.drawCircle(cx, cy, r, paint);
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Color.WHITE);
+                paint.setColor(P5Theme.PAPER_WHITE);
                 paint.setTextAlign(Paint.Align.CENTER);
                 String label = i == STICK ? t("Stick", "Stick") : LABELS[i];
                 paint.setTextSize(i == STICK ? r * 0.35f : r * 0.8f);

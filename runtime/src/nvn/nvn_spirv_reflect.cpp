@@ -19,7 +19,8 @@ enum : uint32_t {
     OpName = 5, OpEntryPoint = 15, OpExecutionMode = 16, OpTypeBool = 20, OpTypeInt = 21, OpTypeFloat = 22,
     OpTypeVector = 23, OpTypeMatrix = 24, OpTypeImage = 25, OpTypeSampler = 26, OpTypeSampledImage = 27,
     OpTypeArray = 28, OpTypeRuntimeArray = 29, OpTypeStruct = 30, OpTypePointer = 32, OpConstant = 43,
-    OpVariable = 59, OpDecorate = 71, OpMemberDecorate = 72,
+    OpVariable = 59, OpDecorate = 71, OpMemberDecorate = 72, OpKill = 252, OpTerminateInvocation = 4416,
+    OpDemoteToHelperInvocationEXT = 5380,
 };
 enum : uint32_t {
     DecBlock = 2, DecBufferBlock = 3, DecBuiltIn = 11, DecLocation = 30, DecComponent = 31, DecBinding = 33,
@@ -252,6 +253,11 @@ bool reflect_spirv(const uint32_t* words, size_t count, ShaderReflection& out, s
         case OpVariable:
             if (n >= 3) vars.push_back({w[1], w[0], w[2]});
             break;
+        case OpKill:
+        case OpTerminateInvocation:
+        case OpDemoteToHelperInvocationEXT:
+            out.uses_discard = true;
+            break;
         }
         i += wc;
     }
@@ -310,6 +316,7 @@ bool reflect_spirv(const uint32_t* words, size_t count, ShaderReflection& out, s
                 elem = t->w[0];
             }
             io.type = scalar(elem, io.components);
+            if (v.storage == ScOutput && io.location < 8) out.output_mask |= (1u << io.location);
             (v.storage == ScInput ? out.inputs : out.outputs).push_back(io);
             continue;
         }

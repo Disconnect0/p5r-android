@@ -3,6 +3,7 @@
 // is blitted to RGBA8 first, so float and packed formats come out as the GPU would display them (clamped to 0..1).
 // Runs under the GPU lock, after the frame's work completed, on its own command buffer.
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -227,11 +228,28 @@ uint32_t frame_dump_every() {
     return n;
 }
 
+namespace {
+std::atomic<uint32_t> g_hotkey_dump_frames{0};
+}  // namespace
+
+void debug_request_capture() {
+    g_hotkey_dump_frames.store(1, std::memory_order_release);
+    debug_arm_hotkey_trace();
+}
+
 // NX_DUMP_FRAMES, or on demand while playing: a file named dump_frames in the data folder (optionally holding
 // "<count> [<every>]", default 40 frames, every 2nd) dumps the next presented frames, then is deleted. The game runs
 // at full speed until then, for glitches that only show in a long session (DEBUG-2 #77). Checked once a second.
 bool frame_dump_due(uint64_t presents) {
     static uint64_t left = 0, every = 2, next_check = 0;
+    if (g_hotkey_dump_frames.load(std::memory_order_relaxed)) {
+        if (g_hotkey_dump_frames.exchange(0, std::memory_order_acq_rel)) {
+            left = std::max<uint64_t>(left, 3);
+            every = 1;
+            log("dump_frames (hotkey): next %llu frames (from present %llu)", (unsigned long long)left,
+                (unsigned long long)presents);
+        }
+    }
     if (plat::kDiagnostics && presents >= next_check) {  // the file: not in NX_RELEASE builds
         next_check = presents + 60;
         std::string path = plat::data_root() + "/dump_frames";

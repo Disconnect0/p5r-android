@@ -104,6 +104,14 @@ VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, ui
             if (patch_x_scale(code, scaled)) code.swap(scaled);
             else log("nvn/vk: shader %s: ultrawide x scale not patched", s->hash.c_str());
         }
+        if (s->stage == ShaderStage::Fragment && uw_on()) {  // NX_ULTRAWIDE: gl_FragCoord.x * spec constant 0
+            std::vector<uint32_t> scaled;
+            if (patch_frag_coord_x(code, scaled)) {
+                code.swap(scaled);
+                uw_mark_fs_fragcoord(s);
+                log("nvn/vk: shader %s: ultrawide FragCoord.x patched", s->hash.c_str());
+            }
+        }
         if (s->stage == ShaderStage::Vertex) clip_z_module(s, code);  // NX_CLIP_Z_PATCH (nvn_spirv_clip.cpp)
         if (const char* opt = std::getenv("NX_SPIRV_OPT"); opt || std::getenv("NX_SPIRV_TOOL")) {  // diagnostic: each module through `spirv-opt <flags>` (NX_SPIRV_OPT) or `<tool> in out` (NX_SPIRV_TOOL) first
             static int n = 0;
@@ -323,11 +331,7 @@ const ProgramLayout& program_layout(const std::vector<const ShaderInfo*>& stages
     }
     static const uint32_t max_dynamic_ssbo = [] {
         const char* e = std::getenv("NX_DYNAMIC_SSBO");
-#if defined(__ANDROID__)
-        if (e && e[0] == '0') return 0u;
-#else
         if (!e || e[0] != '1') return 0u;
-#endif
         VkPhysicalDeviceProperties p{};
         p_vkGetPhysicalDeviceProperties(vk_physical(), &p);
         log("nvn/vk: storage buffers bound with dynamic offsets (up to %u per layout)",
@@ -352,10 +356,16 @@ const ProgramLayout& program_layout(const std::vector<const ShaderInfo*>& stages
                 log("nvn/vk: layout set %d binding %u: type %d count %u stages %#x", k, b.binding, int(b.descriptorType),
                     b.descriptorCount, unsigned(b.stageFlags));
     }
-    VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    ci.setLayoutCount = 4;
-    ci.pSetLayouts = pl.sets;
-    p_vkCreatePipelineLayout(vk_device(), &ci, nullptr, &pl.layout);
+    static std::map<std::array<VkDescriptorSetLayout, 4>, VkPipelineLayout> layout_cache;
+    std::array<VkDescriptorSetLayout, 4> set_key = {pl.sets[0], pl.sets[1], pl.sets[2], pl.sets[3]};
+    auto& cached_pl = layout_cache[set_key];
+    if (!cached_pl) {
+        VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        ci.setLayoutCount = 4;
+        ci.pSetLayouts = pl.sets;
+        p_vkCreatePipelineLayout(vk_device(), &ci, nullptr, &cached_pl);
+    }
+    pl.layout = cached_pl;
     return cache[stages] = pl;
 }
 
@@ -372,7 +382,9 @@ PipelineKey canonical_key(const PipelineKey& in);
 struct PipeBuild {
     VkPipelineShaderStageCreateInfo stages[2]{};
     VkSpecializationInfo spec_info{};
+    VkSpecializationInfo frag_spec_info{};
     float uw_x_value = 1.0f;
+    float uw_frag_x_value = 1.0f;
     uint32_t nstages = 0;
     std::vector<VkVertexInputAttributeDescription> attrs;
     std::vector<VkVertexInputBindingDescription> binds;
@@ -403,7 +415,13 @@ thread_local bool t_worker = false;
 VkPipeline compile(PipeBuild& b) {
     VkPipeline p = VK_NULL_HANDLE;
     const uint64_t t0 = plat::monotonic_ns();
-    VkResult made = p_vkCreateGraphicsPipelines(vk_device(), b.cache, 1, &b.ci, nullptr, &p);
+    VkResult made;
+    if (b.cache != VK_NULL_HANDLE) {
+        std::shared_lock<std::shared_mutex> cache_lk(pipeline_cache_mutex());
+        made = p_vkCreateGraphicsPipelines(vk_device(), b.cache, 1, &b.ci, nullptr, &p);
+    } else {
+        made = p_vkCreateGraphicsPipelines(vk_device(), VK_NULL_HANDLE, 1, &b.ci, nullptr, &p);
+    }
     note_pipeline_created(plat::monotonic_ns() - t0, t_worker);
     if (made != VK_SUCCESS) {
         log("nvn/vk: pipeline for %s + %s failed", b.vs_hash.c_str(), b.fs_hash.c_str());
@@ -464,8 +482,8 @@ Pool& pool() {
             std::thread([pl] {
                 t_worker = true;
                 plat::set_thread_name("pipe-worker");
-                plat::reset_current_thread_affinity("pipe-worker");
-                plat::set_thread_priority(6);
+                plat::pin_current_thread_to_little_cores("pipe-worker");
+                plat::set_thread_priority(0);
                 for (;;) {
                     std::shared_ptr<PipeTask> t;
                     {
@@ -485,11 +503,14 @@ Pool& pool() {
     return *p;
 }
 
-void enqueue(const std::shared_ptr<PipeTask>& t) {
+void enqueue(const std::shared_ptr<PipeTask>& t, bool urgent = false) {
     Pool& pl = pool();
     {
         std::lock_guard lk(pl.m);
-        pl.q.push_back(t);
+        if (urgent)
+            pl.q.push_front(t);
+        else
+            pl.q.push_back(t);
     }
     pl.cv.notify_one();
 }
@@ -589,19 +610,29 @@ PKey bytes_of(const PipelineKey& k) {
 //   1: all graphics draws compile asynchronously (can blink fullscreen/shadow passes on first frame).
 //   2 (Android default): smart safe async — shadows, early boot, fullscreen quads, bloom mips, cubemaps,
 //      and unrendered offscreen bakes stay synchronous; world/character/battle VFX compile on workers.
-int async_pipelines_mode() {
-    static const int mode = [] {
-        if (const char* e = std::getenv("NX_ASYNC_PIPELINES")) {
-            if (e[0] == '0') return 0;
-            if (e[0] == '1') return 1;
-            if (e[0] == '2') return 2;
-        }
+std::atomic<int> g_async_pipelines_mode{-1};
+
+void refresh_async_pipelines_env() {
+    int mode =
 #if defined(__ANDROID__)
-        return 2;
+        2;
 #else
-        return 0;
+        0;
 #endif
-    }();
+    if (const char* e = std::getenv("NX_ASYNC_PIPELINES")) {
+        if (e[0] == '0') mode = 0;
+        else if (e[0] == '1') mode = 1;
+        else if (e[0] == '2') mode = 2;
+    }
+    g_async_pipelines_mode.store(mode, std::memory_order_relaxed);
+}
+
+int async_pipelines_mode() {
+    int mode = g_async_pipelines_mode.load(std::memory_order_relaxed);
+    if (mode < 0) {
+        refresh_async_pipelines_env();
+        mode = g_async_pipelines_mode.load(std::memory_order_relaxed);
+    }
     return mode;
 }
 
@@ -622,7 +653,10 @@ VkPipeline pipeline_for(const PipelineKey& canon, const ProgramLayout& layout, b
     if (auto it = g_inflight.find(ck); it != g_inflight.end()) {
         std::shared_ptr<PipeTask> t = it->second;
         if (t->state.load() != 2) {
-            if (use_async) return *pending = true, VK_NULL_HANDLE;
+            if (use_async) {
+                enqueue(t, true);
+                return *pending = true, VK_NULL_HANDLE;
+            }
             const uint64_t t0 = plat::monotonic_ns();
             t->wait();
             note_pipeline_waited(plat::monotonic_ns() - t0);
@@ -637,7 +671,7 @@ VkPipeline pipeline_for(const PipelineKey& canon, const ProgramLayout& layout, b
         auto t = std::make_shared<PipeTask>();
         t->build = std::move(build);
         g_inflight.emplace(ck, t);
-        enqueue(t);
+        enqueue(t, true);
         return *pending = true, VK_NULL_HANDLE;
     }
     VkPipeline p = compile(*build);
@@ -646,6 +680,8 @@ VkPipeline pipeline_for(const PipelineKey& canon, const ProgramLayout& layout, b
 }
 
 }  // namespace
+
+void pipeline_refresh_config() { refresh_async_pipelines_env(); }
 
 bool pipeline_workers_busy() {
     if (!g_pool_ready.load(std::memory_order_acquire)) return false;
@@ -727,7 +763,7 @@ void pipeline_warm_step() {
             if (!hashes.empty()) {
                 std::thread([hashes = std::move(hashes)] {
                     plat::set_thread_name("shader-prewarm");
-                    plat::reset_current_thread_affinity("shader-prewarm");
+                    plat::pin_current_thread_to_little_cores("shader-prewarm");
                     plat::set_thread_priority(8);
                     size_t loaded_cnt = 0;
                     for (const std::string& h : hashes) {
@@ -748,8 +784,8 @@ void pipeline_warm_step() {
     }
     const bool fast_scan = scan_budget > 0;
     const size_t limit = fast_scan ? std::min<size_t>(scan_budget, 256) : std::min<size_t>(recs.size(), 64);
-    const size_t max_inflight = fast_scan ? 64 : 32;
-    const uint64_t kBudgetNs = fast_scan ? 2'500'000 : 1'000'000;
+    const size_t max_inflight = fast_scan ? 16 : 8;
+    const uint64_t kBudgetNs = fast_scan ? 1'500'000 : 750'000;
     const uint64_t t0 = plat::monotonic_ns();
     for (size_t scanned = 0; scanned < limit && g_prewarm_inflight < max_inflight && remaining > 0; scanned++) {
         if ((!done[cursor] || (scanned & 63) == 63) && plat::monotonic_ns() - t0 > kBudgetNs) break;
@@ -840,8 +876,16 @@ PipelineKey canonical_key(const PipelineKey& in) {
                 k.depth.depth_fail[f] = in.depth.depth_fail[f];
                 k.depth.depth_pass[f] = in.depth.depth_pass[f];
             }
-            if (in.polygon.cull == 0 || (k.depth.stencil_func[1] == 0 && k.depth.depth_pass[1] == 0) ||
-                (k.depth.depth_pass[1] <= 1 && k.depth.depth_pass[0] > 1)) {
+            const bool front_dead = k.depth.stencil_func[0] <= 1 && k.depth.stencil_func[1] > 1;
+            const bool back_dead = k.depth.stencil_func[1] <= 1 && k.depth.stencil_func[0] > 1;
+            if (front_dead) {
+                k.depth.stencil_func[0] = k.depth.stencil_func[1];
+                k.depth.stencil_fail[0] = k.depth.stencil_fail[1];
+                k.depth.depth_fail[0] = k.depth.depth_fail[1];
+                k.depth.depth_pass[0] = k.depth.depth_pass[1];
+            } else if (back_dead || in.polygon.cull == 0 ||
+                       (k.depth.stencil_func[1] == 0 && k.depth.depth_pass[1] == 0) ||
+                       (k.depth.depth_pass[1] <= 1 && k.depth.depth_pass[0] > 1)) {
                 k.depth.stencil_func[1] = k.depth.stencil_func[0];
                 k.depth.stencil_fail[1] = k.depth.stencil_fail[0];
                 k.depth.depth_fail[1] = k.depth.depth_fail[0];
@@ -860,6 +904,7 @@ PipelineKey canonical_key(const PipelineKey& in) {
     k.alpha_to_coverage = (!dc.alpha_to_coverage_enable && in.alpha_to_coverage) ? 1 : 0;
     k.restart = dc.primitive_restart_enable ? 0 : in.restart;
     k.uw_x = in.uw_x;
+    k.uw_frag_x = in.uw_frag_x;
     return k;
 }
 
@@ -871,7 +916,9 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
     std::memcpy(B.color_formats, key.color_formats, sizeof B.color_formats);
     VkPipelineShaderStageCreateInfo(&stages)[2] = B.stages;
     VkSpecializationInfo& spec_info = B.spec_info;
+    VkSpecializationInfo& frag_spec_info = B.frag_spec_info;
     float& uw_x_value = B.uw_x_value;
+    float& uw_frag_x_value = B.uw_frag_x_value;
     uint32_t& nstages = B.nstages;
     uint8_t int_kinds[16] = {};
     for (uint32_t a = 0; a < key.attrib_count && a < 16; a++) int_kinds[a] = uint8_t(vertex_int_kind(key.attribs[a].format));
@@ -903,6 +950,12 @@ std::unique_ptr<PipeBuild> prepare_graphics_pipeline(const PipelineKey& key, con
             spec_info = {1, &entry, sizeof(float), &uw_x_value};
             uw_x_value = key.uw_x;
             st.pSpecializationInfo = &spec_info;
+        }
+        if (s == key.fs && key.uw_frag_x > 0 && uw_fs_has_fragcoord(s)) {  // NX_ULTRAWIDE: constant 0 of patched FragCoord.x
+            static VkSpecializationMapEntry fentry{0, 0, sizeof(float)};
+            frag_spec_info = {1, &fentry, sizeof(float), &uw_frag_x_value};
+            uw_frag_x_value = key.uw_frag_x;
+            st.pSpecializationInfo = &frag_spec_info;
         }
     }
 
@@ -1348,7 +1401,15 @@ VkPipeline compute_pipeline(const ShaderInfo* cs, const ProgramLayout& layout) {
         sg.requiredSubgroupSize = 32;
         if (gpu_require_subgroup32()) ci.stage.pNext = &sg;
         ci.layout = layout.layout;
-        if (p_vkCreateComputePipelines(vk_device(), pipeline_cache(), 1, &ci, nullptr, &p) != VK_SUCCESS) {
+        VkPipelineCache pcache = pipeline_cache();
+        VkResult res;
+        if (pcache != VK_NULL_HANDLE) {
+            std::shared_lock<std::shared_mutex> cache_lk(pipeline_cache_mutex());
+            res = p_vkCreateComputePipelines(vk_device(), pcache, 1, &ci, nullptr, &p);
+        } else {
+            res = p_vkCreateComputePipelines(vk_device(), VK_NULL_HANDLE, 1, &ci, nullptr, &p);
+        }
+        if (res != VK_SUCCESS) {
             log("nvn/vk: compute pipeline for %s failed", cs->hash.c_str());
             p = VK_NULL_HANDLE;
         }
@@ -1406,22 +1467,24 @@ VkImageView storage_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
 static uint64_t g_view_forget_serial = 1;
 uint64_t view_forget_serial() { return g_view_forget_serial; }
 
-void forget_image_views(const GpuImage& img) {
-    g_view_forget_serial++;
+void forget_image_views(const GpuImage& img, bool keep_default_view) {
+    bool dropped_any = !keep_default_view;
     // The caches are ordered by image first: its views are one run from the smallest key with that image (this was
     // a scan of every cached view per destroyed texture, a visible share of the replay time).
     auto drop = [&](auto& cache, auto lowest) {
         for (auto it = cache.lower_bound(lowest); it != cache.end() && std::get<0>(it->first) == img.image;) {
+            dropped_any = true;
             forget_framebuffers(it->second);
             if (it->second && it->second != img.view) p_vkDestroyImageView(vk_device(), it->second, nullptr);
             it = cache.erase(it);
         }
     };
-    forget_framebuffers(img.view);  // nvn_renderpass.cpp (attachments may use the whole-image view)
+    if (!keep_default_view) forget_framebuffers(img.view);  // nvn_renderpass.cpp (attachments may use the whole-image view)
     drop(g_sampled_views, std::make_tuple(img.image, VkImageViewType(0), 0u, uint64_t(0), uint64_t(0)));
     for (ViewHit& h : g_view_hits)
-        if (std::get<0>(h.key) == img.image) h = {};
+        if (std::get<0>(h.key) == img.image) h = {}, dropped_any = true;
     drop(g_attachment_views, std::make_tuple(img.image, 0u, 0u, VkFormat(0)));
+    if (dropped_any) g_view_forget_serial++;
 }
 
 }  // namespace nx::nvn

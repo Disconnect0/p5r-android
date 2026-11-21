@@ -5,13 +5,12 @@
      all-files access. The native build (NX_NCE, build_android.cmd -Nce) holds no game code: it runs exefs/ as it is.
      The recompiled build (analysis/ and the game's code compiled in) is private to the owner of the game. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="io.github.p5rrecomp"
-    android:versionCode="35"
-    android:versionName="0.5.26">
+    package="io.github.p5rrecomp.opt"
+    android:versionCode="131"
+    android:versionName="0.5.27">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- Vulkan 1.1: the mid-range GPUs the port targets (Adreno 610, PowerVR BXM) have nothing newer. -->
@@ -20,7 +19,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="P5R"
+        android:label="Persona 5 Royal"
         android:requestLegacyExternalStorage="true"
         android:hasCode="true"
         android:extractNativeLibs="true"
@@ -31,9 +30,9 @@
         android:theme="@style/Fullscreen">
         <!-- Home screen: data check, options (config.txt), then the game. -->
         <activity
-            android:name=".Launcher"
+            android:name="io.github.p5rrecomp.Launcher"
             android:exported="true"
-            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:theme="@style/P5LauncherTheme"
             android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -44,22 +43,22 @@
              libspirvharness.so, the shader translator). Its own process, so the translator's runtime never shares
              the game's. -->
         <activity
-            android:name=".ImportActivity"
+            android:name="io.github.p5rrecomp.ImportActivity"
             android:exported="false"
             android:process=":import"
-            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:theme="@style/P5LauncherTheme"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden" />
         <!-- Where the on-screen controls go (NX_TOUCH_LAYOUT), full screen like the game. -->
         <activity
-            android:name=".ControlsEditor"
+            android:name="io.github.p5rrecomp.ControlsEditor"
             android:exported="false"
             android:theme="@style/Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden" />
         <!-- The game. Exported: test runs start it directly (games/p5r/tools/run_android.ps1). -->
         <activity
-            android:name=".GameActivity"
+            android:name="io.github.p5rrecomp.GameActivity"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:resizeableActivity="false"
@@ -67,13 +66,13 @@
             <meta-data android:name="android.app.lib_name" android:value="p5r" />
         </activity>
         <activity
-            android:name=".PauseActivity"
+            android:name="io.github.p5rrecomp.PauseActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
             android:theme="@android:style/Theme.Translucent.NoTitleBar.Fullscreen" />
-            <provider
-            android:name=".LogProvider"
-            android:authorities="io.github.p5rrecomp.logprovider"
+        <provider
+            android:name="io.github.p5rrecomp.LogProvider"
+            android:authorities="io.github.p5rrecomp.opt.logprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>

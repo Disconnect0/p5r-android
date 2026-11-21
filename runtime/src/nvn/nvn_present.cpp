@@ -21,6 +21,10 @@ namespace nx::nvn {
 
 using namespace nx::vk;
 
+void sampler_refresh_config();   // nvn_sampler.cpp
+void draw_refresh_config();      // nvn_draw.cpp
+void pipeline_refresh_config();  // nvn_pipeline.cpp
+
 namespace {
 
 // glslc -O --target-env=vulkan1.0 of present.vert:
@@ -102,7 +106,7 @@ constexpr size_t kOverlayBytes = 16 * kOverlayMax + 4 * kFontWords;
 constexpr VkShaderStageFlags kPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 struct Push {
-    float rot[4], off[4], box[4], crop[4];
+    float rot[4], off[4], box[4], crop[4], post[4];
 };
 
 #include "nvn_fsr_spirv.inc"
@@ -119,9 +123,19 @@ struct Pass {
     VkExtent2D extent{};
     VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     bool failed = false;
-    // Single-pass Mobile FSR 1 (NX_FSR=1): combined EASU + RCAS in g.render_pass across all display orientations.
+    // Single-pass Mobile FSR 1 (NX_FSR=1), fast 5-tap CAS (NX_CAS=1), and Mobile FXAA (NX_FXAA=1).
     VkPipeline rcas = VK_NULL_HANDLE;
+    VkPipeline cas = VK_NULL_HANDLE;
+    VkPipeline fxaa = VK_NULL_HANDLE;
     bool fsr_logged = false;
+    bool enhance_logged = false;
+    bool cfg_fsr = false;
+    bool cfg_cas = false;
+    bool cfg_fxaa = false;
+    bool cfg_show_fps = false;
+    int cfg_color = 0;
+    float cfg_cas_strength = 0.72f;
+    float cfg_fsr_sharp = 0.2f;
     struct PresentSetEntry {
         uint64_t epoch = 0;
         VkImageView view = VK_NULL_HANDLE;
@@ -132,21 +146,61 @@ struct Pass {
     uint32_t set_cache_next = 0;
 } g;
 
-bool fsr_on() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_FSR");
-        return e && e[0] == '1';
-    }();
-    return on;
+bool read_fsr_env() {
+    const char* e = std::getenv("NX_FSR");
+    return e && e[0] == '1';
 }
 
-float fsr_sharpness() {  // stops of sharpening: 0 the most, 2 none (FSR's own default is 0.2)
-    static const float v = [] {
-        const char* e = std::getenv("NX_FSR_SHARP");
-        return e ? std::max(0.0f, std::min(2.0f, float(std::atof(e)))) : 0.2f;
-    }();
-    return v;
+bool read_cas_env() {
+    const char* e = std::getenv("NX_CAS");
+    return e && e[0] == '1';
 }
+
+float read_cas_strength_env() {
+    const char* e = std::getenv("NX_CAS_STRENGTH");
+    return e ? std::clamp(float(std::atof(e)), 0.0f, 1.0f) : 0.72f;
+}
+
+bool read_fxaa_env() {
+    const char* e = std::getenv("NX_FXAA");
+    return e && e[0] == '1';
+}
+
+int read_color_profile_env() {  // 0 = default, 1 = vivid, 2 = p5 pop
+    const char* e = std::getenv("NX_COLOR_PROFILE");
+    if (!e || !e[0] || e[0] == '0' || std::strcmp(e, "default") == 0) return 0;
+    if (e[0] == '2' || std::strcmp(e, "pop") == 0) return 2;
+    if (e[0] == '1' || std::strcmp(e, "vivid") == 0) return 1;
+    return 0;
+}
+
+float read_fsr_sharpness_env() {  // stops of sharpening: 0 the most, 2 none (FSR's own default is 0.2)
+    const char* e = std::getenv("NX_FSR_SHARP");
+    return e ? std::max(0.0f, std::min(2.0f, float(std::atof(e)))) : 0.2f;
+}
+
+void refresh_present_config() {
+    g.cfg_fsr = read_fsr_env();
+    g.cfg_cas = read_cas_env();
+    g.cfg_fxaa = read_fxaa_env();
+    const char* fps_e = std::getenv("NX_SHOW_FPS");
+    g.cfg_show_fps = fps_e && fps_e[0] == '1';
+    g.cfg_color = read_color_profile_env();
+    g.cfg_cas_strength = read_cas_strength_env();
+    g.cfg_fsr_sharp = read_fsr_sharpness_env();
+    g.fsr_logged = false;
+    g.enhance_logged = false;
+    sampler_refresh_config();
+    draw_refresh_config();
+    pipeline_refresh_config();
+}
+
+bool fsr_on() { return g.cfg_fsr; }
+bool cas_on() { return g.cfg_cas; }
+float cas_strength() { return g.cfg_cas_strength; }
+bool fxaa_on() { return g.cfg_fxaa; }
+int color_profile() { return g.cfg_color; }
+float fsr_sharpness() { return g.cfg_fsr_sharp; }
 
 VkShaderModule module(const uint32_t* code, size_t bytes) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -291,6 +345,10 @@ bool make_pipeline(VkFormat format) {
         g.overlay = VK_NULL_HANDLE;
     }
     if (ok == VK_SUCCESS && fsr_on() && !make_fsr()) log("nvn/vk: FSR unavailable: plain scaling");
+    if (ok == VK_SUCCESS && cas_on() && !fxaa_on() && !build_pipeline(g.render_pass, kCas, sizeof kCas, &g.cas))
+        log("nvn/vk: CAS unavailable: plain scaling");
+    if (ok == VK_SUCCESS && fxaa_on() && !build_pipeline(g.render_pass, kFxaa, sizeof kFxaa, &g.fxaa))
+        log("nvn/vk: FXAA unavailable: plain scaling");
     g.format = format;
     return ok == VK_SUCCESS;
 }
@@ -323,12 +381,21 @@ bool present_pass_targets(VkFormat format, const std::vector<VkImage>& images, V
         p_vkDestroyRenderPass(d, g.render_pass, nullptr);
         g.pipeline = g.overlay = VK_NULL_HANDLE, g.render_pass = VK_NULL_HANDLE;
         if (g.rcas) p_vkDestroyPipeline(d, g.rcas, nullptr);
-        g.rcas = VK_NULL_HANDLE;
+        if (g.cas) p_vkDestroyPipeline(d, g.cas, nullptr);
+        if (g.fxaa) p_vkDestroyPipeline(d, g.fxaa, nullptr);
+        g.rcas = g.cas = g.fxaa = VK_NULL_HANDLE;
     }
+    refresh_present_config();
     if (!g.pipeline && !make_pipeline(format)) {
         log("nvn/vk: present pass unavailable: frames are blitted");
         g.failed = true;
         return false;
+    }
+    // Lazily build newly toggled enhancement pipelines when relaunching in the same process.
+    if (g.render_pass) {
+        if (fsr_on() && !g.rcas) make_fsr();
+        if (cas_on() && !fxaa_on() && !g.cas) build_pipeline(g.render_pass, kCas, sizeof kCas, &g.cas);
+        if (fxaa_on() && !g.fxaa) build_pipeline(g.render_pass, kFxaa, sizeof kFxaa, &g.fxaa);
     }
     VkDevice d = vk_device();
     for (VkImage img : images) {
@@ -387,9 +454,7 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     plat::OverlayShape shapes[kOverlayMax];
     size_t count = plat::touch_overlay(shapes, kOverlayMax);
     // NX_SHOW_FPS=1 (the launcher's FPS counter, off by default): presents over the last second, top left.
-    const char* fps_env = std::getenv("NX_SHOW_FPS");
-    const bool show_fps = fps_env && fps_env[0] == '1';
-    if (show_fps && count < kOverlayMax) {
+    if (g.cfg_show_fps && count < kOverlayMax) {
         static uint64_t t0 = plat::monotonic_ns(), frames = 0;
         static uint32_t fps = 0;
         uint64_t now = plat::monotonic_ns();
@@ -414,18 +479,32 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     uint32_t dyn_off = uint32_t(ubo.offset);
     p.off[3] = tw / th;
 
-    // Single-pass Mobile FSR 1.0: upscale and sharpen only when actually upscaling (matches upstream > 1.01x guard).
+    // Single-pass Mobile FSR 1.0, fast 5-tap CAS, Mobile FXAA, and 0-cost Color Profile grading.
     uint32_t out_w = uint32_t(bw * tw + 0.5f), out_h = uint32_t(bh * th + 0.5f);
     const bool use_fsr = fsr_on() && g.rcas != VK_NULL_HANDLE && out_w > cw * 1.01f && out_h > ch * 1.01f;
+    const bool use_fxaa = !use_fsr && fxaa_on() && g.fxaa != VK_NULL_HANDLE;
+    const bool use_cas = !use_fsr && !use_fxaa && cas_on() && g.cas != VK_NULL_HANDLE;
+    const int cprof = color_profile();
     p.off[2] = std::exp2(-fsr_sharpness());
+    p.post[0] = cas_on() ? cas_strength() : 0.0f;
+    p.post[1] = (cprof == 2) ? 0.55f : (cprof == 1 ? 0.40f : 0.0f);
+    p.post[2] = (cprof == 2) ? 0.42f : (cprof == 1 ? 0.20f : 0.0f);
+    p.post[3] = (cprof == 2) ? 1.0f : 0.0f;
     if (use_fsr && !g.fsr_logged) {
-        log("nvn/vk: FSR 1 (single-pass mobile): %.0fx%.0f -> %ux%u (sharpness %.2f stops)",
-            cw, ch, out_w, out_h, fsr_sharpness());
+        log("nvn/vk: FSR 1 (single-pass mobile): %.0fx%.0f -> %ux%u (sharpness %.2f stops, color=%d)",
+            cw, ch, out_w, out_h, fsr_sharpness(), cprof);
         g.fsr_logged = true;
     } else if (fsr_on() && g.rcas != VK_NULL_HANDLE && !g.fsr_logged) {
         log("nvn/vk: FSR 1 skipped (not upscaling: %.0fx%.0f -> %ux%u)", cw, ch, out_w, out_h);
         g.fsr_logged = true;
     }
+    if (!g.enhance_logged && (use_fxaa || use_cas || cprof > 0)) {
+        log("nvn/vk: present enhance active (fxaa=%d, cas=%d [%.2f], color=%d)",
+            int(use_fxaa), int(cas_on()), p.post[0], cprof);
+        g.enhance_logged = true;
+    }
+
+    VkPipeline active_pipe = use_fsr ? g.rcas : (use_fxaa ? g.fxaa : (use_cas ? g.cas : g.pipeline));
 
     VkRenderPassBeginInfo rb{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rb.renderPass = g.render_pass, rb.framebuffer = g.framebuffers[index], rb.renderArea = {{0, 0}, g.extent};
@@ -434,7 +513,7 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     VkRect2D sc{{0, 0}, g.extent};
     p_vkCmdSetViewport(cb, 0, 1, &v);
     p_vkCmdSetScissor(cb, 0, 1, &sc);
-    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, use_fsr ? g.rcas : g.pipeline);
+    p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, active_pipe);
     p_vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &set, 1, &dyn_off);
     p_vkCmdPushConstants(cb, g.layout, kPushStages, 0, sizeof p, &p);
     p_vkCmdDraw(cb, 3, 1, 0, 0);

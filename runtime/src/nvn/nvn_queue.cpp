@@ -273,12 +273,21 @@ void SyncWait(CPU& c) {
 void QueueInitialize(CPU& c) { c.x[0] = 1; }  // NVNboolean (NVNqueue*, const NVNqueueBuilder*)
 void QueueFinalize(CPU&) {}
 void QueueSubmitCommands(CPU& c) {  // (NVNqueue*, int count, const NVNcommandHandle*)
-    static thread_local bool s_prio_set = [] {
-        plat::set_thread_priority(-8);
-        return true;
-    }();
-    (void)s_prio_set;
-    plat::perf_hint_thread();  // this thread replays: part of every frame (perf_hint.cpp)
+    if (KThread* self = self_thread(); self) {
+        if (!self->is_replay) {
+            self->is_replay = true;
+            if (worker_enabled()) {
+                // With NX_REPLAY_THREAD=1, replay runs on the dedicated `nvn replay` host thread; keep the guest
+                // recording/submitting thread on m.main_non_replay ({0..6}, priority -6) so it runs fast on CPU 6
+                // without ever preempting `nvn replay` on CPU 7.
+                plat::pin_thread_tid_to_big_cores(self->host_tid, -6);
+            } else {
+                plat::set_thread_priority(-10);
+                plat::place_fast_cores();
+            }
+        }
+        plat::perf_hint_thread();  // any submitting/replay thread joins ADPF (perf_hint.cpp)
+    }
     std::vector<std::shared_ptr<CmdList>> lists;
     lists.reserve(uint32_t(c.x[1]));
     static uint64_t submitted = 0, missing = 0;
@@ -632,7 +641,13 @@ void QueuePresentTexture(CPU& c) {
     tl("present>");
     {
         static thread_local bool marked = false;
-        if (!marked) marked = true, svc_profile_mark(2);
+        if (!marked) {
+            marked = true;
+            if (KThread* self = self_thread()) self->is_replay = true;
+            plat::set_thread_priority(-10);
+            plat::place_fast_cores();
+            svc_profile_mark(2);
+        }
         static uint64_t n = 0;
         if (++n % 600 == 0) svc_profile_report(600, 2);
     }

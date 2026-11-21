@@ -35,6 +35,8 @@ bool enabled() {
 }
 
 void run() {
+    plat::place_fast_cores();
+    plat::set_thread_priority(-19);
     plat::perf_hint_thread();
     plat::set_thread_name("nvn replay");
     for (;;) {
@@ -55,6 +57,8 @@ void run() {
 }
 
 }  // namespace
+
+bool worker_enabled() { return enabled(); }
 
 uint64_t worker_run(std::function<void()> job) {
     if (!enabled()) {

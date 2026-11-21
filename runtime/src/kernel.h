@@ -30,6 +30,7 @@ struct KThread : KObject {
     uint64_t last_tick_call = 0;  // nn::os::GetSystemTick back-off
     uint32_t tick_spins = 0;
     int prio = 44, core = 0;
+    bool is_replay = false;
     std::atomic<const char*> hle{nullptr};  // the HLE function it is in (for the stall report), null in guest code
     bool started = false, exited = false, cancel = false;
     // wait state (under the kernel lock)
@@ -65,6 +66,7 @@ std::shared_ptr<KObject> handle_get(uint32_t h);
 void handle_close(uint32_t h);
 void notify_all();
 KThread* self_thread();
+void repin_guest_workers_to_little_cores(int64_t replay_tid);
 void backtrace(CPU& c);
 uint64_t heap_size();  // svcSetHeapSize's current size
 

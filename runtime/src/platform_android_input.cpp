@@ -46,6 +46,10 @@
 #include "platform_android.h"
 #include "touch_layout.h"
 
+namespace nx::nvn {
+void debug_request_capture();
+}  // namespace nx::nvn
+
 // Android input: game controllers and touch (split from platform_android.cpp).
 namespace nx::plat {
 
@@ -57,8 +61,9 @@ namespace nx::plat {
 
 namespace {
 std::mutex g_in;
-PadState g_pad_buttons;  // controller state
-uint64_t g_motion_buttons = 0;  // d-pad and analog triggers, kept separate so custom mappings release cleanly
+PadState g_pad_buttons;      // controller stick state
+uint64_t g_key_buttons = 0;  // digital controller/keyboard button state (KeyEvent)
+uint64_t g_axis_buttons = 0; // analog hat/trigger button state (MotionEvent)
 enum Stick : uint8_t { kNoStick, kLeftStick, kRightStick };
 struct Touch {
     int32_t id;
@@ -85,24 +90,11 @@ uint64_t g_last_touch_ns = 0;  // the drawn controls dim after kTouchIdleNs with
 constexpr uint64_t kTouchIdleNs = 8'000'000'000;
 
 bool gamepad_swap_abxy() {
-    const char* e = std::getenv("NX_GAMEPAD_LAYOUT");
-    return e && std::strcmp(e, "1") == 0;
-}
-
-float stick_sens() {
-    const char* e = std::getenv("NX_STICK_SENSITIVITY");
-    int v = e ? std::atoi(e) : 100;
-    if (v < 25) v = 25;
-    if (v > 300) v = 300;
-    return float(v) / 100.0f;
-}
-
-float camera_sens() {
-    const char* e = std::getenv("NX_CAMERA_SENSITIVITY");
-    int v = e ? std::atoi(e) : 100;
-    if (v < 25) v = 25;
-    if (v > 300) v = 300;
-    return float(v) / 100.0f;
+    static const bool swap = [] {
+        const char* e = std::getenv("NX_GAMEPAD_LAYOUT");
+        return e && std::strcmp(e, "1") == 0;
+    }();
+    return swap;
 }
 
 constexpr std::array<uint64_t, 16> kGamepadButtonBits = {
@@ -146,7 +138,8 @@ const GamepadMap& gamepad_map() {
     for (size_t i = 0; i < map.keys.size(); i++) {
         char* end = nullptr;
         long key = std::strtol(p, &end, 10);
-        if (end == p || key <= AKEYCODE_UNKNOWN || key > 4096 || (i + 1 < map.keys.size() ? *end != ',' : *end != '\0')) {
+        if (end == p || key <= AKEYCODE_UNKNOWN || key > 4096
+                || (i + 1 < map.keys.size() ? *end != ',' : *end != '\0')) {
             map = GamepadMap{};
             return map;
         }
@@ -167,11 +160,31 @@ bool known_gamepad_key(int32_t k) {
         case AKEYCODE_BUTTON_5: case AKEYCODE_BUTTON_6: case AKEYCODE_BUTTON_7: case AKEYCODE_BUTTON_8:
         case AKEYCODE_BUTTON_9: case AKEYCODE_BUTTON_10: case AKEYCODE_BUTTON_11: case AKEYCODE_BUTTON_12:
         case AKEYCODE_DPAD_LEFT: case AKEYCODE_DPAD_UP: case AKEYCODE_DPAD_RIGHT: case AKEYCODE_DPAD_DOWN:
-        case AKEYCODE_BACK:
-            return true;
-        default:
-            return false;
+        case AKEYCODE_BACK: return true;
+        default: return false;
     }
+}
+
+float stick_sens() {
+    static const float s = [] {
+        const char* e = std::getenv("NX_STICK_SENSITIVITY");
+        int v = e ? std::atoi(e) : 100;
+        if (v < 25) v = 25;
+        if (v > 300) v = 300;
+        return float(v) / 100.0f;
+    }();
+    return s;
+}
+
+float camera_sens() {
+    static const float s = [] {
+        const char* e = std::getenv("NX_CAMERA_SENSITIVITY");
+        int v = e ? std::atoi(e) : 100;
+        if (v < 25) v = 25;
+        if (v > 300) v = 300;
+        return float(v) / 100.0f;
+    }();
+    return s;
 }
 
 uint64_t key_to_button_default(int32_t k) {
@@ -239,7 +252,7 @@ uint64_t key_to_button(int32_t k) {
     for (size_t i = 0; i < map.keys.size(); i++)
         if (canonical_gamepad_key(map.keys[i]) == canonical) return kGamepadButtonBits[i];
     if (known_gamepad_key(k)) return 0;
-    // Keep keyboard confirmation/back usable even while a custom gamepad map is active.
+    // Preserve keyboard controls while a custom controller map is active.
     switch (k) {
         case AKEYCODE_ENTER: case AKEYCODE_NUMPAD_ENTER: case AKEYCODE_SPACE: case AKEYCODE_DPAD_CENTER: return kA;
         case AKEYCODE_ESCAPE: return kB;
@@ -267,9 +280,9 @@ int32_t on_input(android_app*, AInputEvent* e) {
         g_gamepad = true;
         note_controller(AInputEvent_getDeviceId(e));
         if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN)
-            g_pad_buttons.buttons |= b;
+            g_key_buttons |= b;
         else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP)
-            g_pad_buttons.buttons &= ~b;
+            g_key_buttons &= ~b;
         return 1;
     }
     if (type != AINPUT_EVENT_TYPE_MOTION) return 0;
@@ -301,37 +314,45 @@ int32_t on_input(android_app*, AInputEvent* e) {
         g_pad_buttons.ry = ry;
         float hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0);
         float hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
-        uint64_t motion_buttons = 0;
-        if (gamepad_map().active) {
-            if (hx < -0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_LEFT);
-            if (hx > 0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_RIGHT);
-            if (hy < -0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_UP);
-            if (hy > 0.5f) motion_buttons |= key_to_button(AKEYCODE_DPAD_DOWN);
-            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0) > 0.4f ||
-                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0) > 0.4f)
-                motion_buttons |= key_to_button(AKEYCODE_BUTTON_L2);
-            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0) > 0.4f ||
-                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0) > 0.4f)
-                motion_buttons |= key_to_button(AKEYCODE_BUTTON_R2);
-        } else {
-            if (hx < -0.5f) motion_buttons |= kLeft;
-            if (hx > 0.5f) motion_buttons |= kRight;
-            if (hy < -0.5f) motion_buttons |= kUp;
-            if (hy > 0.5f) motion_buttons |= kDown;
-            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0) > 0.4f ||
-                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0) > 0.4f)
-                motion_buttons |= kZL;
-            if (AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0) > 0.4f ||
-                AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0) > 0.4f)
-                motion_buttons |= kZR;
-        }
-        g_motion_buttons = motion_buttons;
+        uint64_t axis_buttons = 0;
+        if (hx < -0.5f) axis_buttons |= kLeft;
+        if (hx > 0.5f) axis_buttons |= kRight;
+        if (hy < -0.5f) axis_buttons |= kUp;
+        if (hy > 0.5f) axis_buttons |= kDown;
+        // Hysteresis prevents analog trigger chatter near the threshold, and keeping axis buttons separate from
+        // g_key_buttons prevents stick MotionEvents from clearing digital KeyEvent L2/R2/D-pad presses (Third Eye flicker).
+        constexpr float kTrigPress = 0.35f;
+        constexpr float kTrigRelease = 0.20f;
+        const float l_trig = std::max(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0),
+                                      AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0));
+        const float r_trig = std::max(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0),
+                                      AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0));
+        if (l_trig > ((g_axis_buttons & kZL) ? kTrigRelease : kTrigPress)) axis_buttons |= kZL;
+        if (r_trig > ((g_axis_buttons & kZR) ? kTrigRelease : kTrigPress)) axis_buttons |= kZR;
+        g_axis_buttons = axis_buttons;
         return 1;
     }
     if ((src & AINPUT_SOURCE_TOUCHSCREEN) != AINPUT_SOURCE_TOUCHSCREEN) return 0;
-    if (!touch_enabled()) return 0;  // NX_TOUCH_SHOW=0
     int32_t action = AMotionEvent_getAction(e);
     int32_t kind = action & AMOTION_EVENT_ACTION_MASK;
+    // 3-finger tap anywhere on screen (only when Debug logging / NX_ENABLE_LOG=1 is enabled):
+    // arms a 1-frame draw trace (trace_draws) + frame dump (dump_frames) with a 2-second debounce.
+    if (kind == AMOTION_EVENT_ACTION_POINTER_DOWN && AMotionEvent_getPointerCount(e) == 3) {
+        static const bool log_on = [] {
+            const char* en = std::getenv("NX_ENABLE_LOG");
+            return !en || (en[0] != '0' && std::strcmp(en, "false") != 0);
+        }();
+        static uint64_t s_last_hotkey_ns = 0;
+        const uint64_t now_hk = monotonic_ns();
+        if (log_on && now_hk >= s_last_hotkey_ns + 2'000'000'000ull) {
+            s_last_hotkey_ns = now_hk;
+            nx::nvn::debug_request_capture();
+            nx::log("debug hotkey (3-finger tap): armed trace_draws + dump_hud + dump_frames");
+            show_toast("Debug trace captured");
+        }
+        return 1;
+    }
+    if (!touch_enabled()) return 0;  // NX_TOUCH_SHOW=0
     size_t index = size_t((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
     const uint64_t now = monotonic_ns();
     g_last_touch_ns = now;
@@ -403,7 +424,7 @@ bool headless() {  // NX_HEADLESS (platform.h)
 
 void read_pad(PadState& p) {
     std::lock_guard lk(g_in);
-    p.buttons |= g_pad_buttons.buttons | g_motion_buttons;
+    p.buttons |= g_key_buttons | g_axis_buttons;
     if (g_pad_buttons.lx || g_pad_buttons.ly) {
         p.lx = g_pad_buttons.lx;
         p.ly = g_pad_buttons.ly;

@@ -28,6 +28,8 @@ namespace {
 std::mutex g_log_lock;
 FILE* g_log_file = nullptr;
 std::vector<std::string> g_early_logs;
+std::atomic<bool> g_force_crash_log{false};
+FILE* g_crash_file = nullptr;
 
 std::vector<LoadedModule> g_modules;
 std::unordered_map<std::string, uint64_t> g_exports;
@@ -50,6 +52,19 @@ thread_local const char* t_missing_name = nullptr;
 
 // ---- logging --------------------------------------------------------------------------------------------------
 
+void begin_crash_log() {
+    g_force_crash_log.store(true, std::memory_order_relaxed);
+#if defined(__ANDROID__)
+    if (!g_crash_file) {
+        std::string root = plat::data_root();
+        if (!root.empty()) {
+            std::string path = root + "/nx_crash.log";
+            g_crash_file = std::fopen(path.c_str(), "w");
+        }
+    }
+#endif
+}
+
 void log(const char* fmt, ...) {
 #if defined(__ANDROID__)
     // Diagnostic build: runtime logging enabled by default to capture engine/GPU diagnostics.
@@ -59,7 +74,8 @@ void log(const char* fmt, ...) {
         if (!e) return true;
         return e[0] != '0' && std::strcmp(e, "false") != 0;
     }();
-    if (!s_enabled) return;
+    const bool force_crash = g_force_crash_log.load(std::memory_order_relaxed);
+    if (!s_enabled && !force_crash) return;
 #endif
     char buf[2048];
     va_list ap;
@@ -67,6 +83,15 @@ void log(const char* fmt, ...) {
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     plat::log_line(buf);
+#if defined(__ANDROID__)
+    if (force_crash) {
+        if (g_crash_file) {
+            std::fprintf(g_crash_file, "%s\n", buf);
+            std::fflush(g_crash_file);
+        }
+        return;
+    }
+#endif
     const char* path = std::getenv("NX_LOG");
     std::string default_path;
     if (!path) {

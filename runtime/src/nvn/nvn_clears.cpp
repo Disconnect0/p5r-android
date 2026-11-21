@@ -32,11 +32,33 @@ struct Pending {
     VkClearValue color[8]{};
     VkImageAspectFlags ds = 0;
     VkClearValue depth{};
+    GpuImage* imgs[9] = {};  // cached pointers for slots 0..7 (colors) and 8 (depth)
 };
 // The pending clears, oldest first. Without NX_CLEARS_V2 there is at most one. With it, several, never two on the same
 // image (a clear of an image already pending with other targets runs the older one first), so their order does not
 // matter and each becomes a loadOp, or runs alone, on its own.
 std::vector<Pending> g_list;
+uint64_t g_pending_bloom = 0;
+
+inline uint64_t image_bloom_bit(const GpuImage* img) {
+    const uintptr_t v = reinterpret_cast<uintptr_t>(img);
+    return 1ull << (((v >> 6) ^ (v >> 13)) & 63);
+}
+
+void refresh_pending_images(Pending& e) {
+    for (uint32_t k = 0; k < 9; k++) e.imgs[k] = nullptr;
+    for (uint32_t k = 0; k < e.t.color_count && k < 8; k++)
+        if ((e.colors >> k & 1) && e.t.colors[k]) e.imgs[k] = image_of(e.t.colors[k]);
+    if (e.ds && e.t.depth) e.imgs[8] = image_of(e.t.depth);
+}
+
+void rebuild_pending_bloom() {
+    uint64_t b = 0;
+    for (const Pending& e : g_list)
+        for (const GpuImage* img : e.imgs)
+            if (img) b |= image_bloom_bit(img);
+    g_pending_bloom = b;
+}
 uint64_t g_deferred = 0, g_as_load = 0, g_alone = 0, g_transfer = 0;
 uint64_t g_scissored = 0, g_masked = 0, g_mask_fallback = 0, g_scissor_lost = 0;  // G6
 
@@ -69,16 +91,11 @@ VkExtent2D targets_extent(const Targets& t) {
 
 // The images an entry clears (slots 0..7 colours, 8 depth/stencil; null where not cleared).
 void cleared_images(const Pending& e, GpuImage* out[9]) {
-    for (uint32_t k = 0; k < 9; k++) out[k] = nullptr;
-    for (uint32_t k = 0; k < e.t.color_count && k < 8; k++)
-        if ((e.colors >> k & 1) && e.t.colors[k]) out[k] = image_of(e.t.colors[k]);
-    if (e.ds && e.t.depth) out[8] = image_of(e.t.depth);
+    for (uint32_t k = 0; k < 9; k++) out[k] = e.imgs[k];
 }
 
 bool entry_has_image(const Pending& e, const GpuImage* img) {
-    GpuImage* imgs[9];
-    cleared_images(e, imgs);
-    for (GpuImage* i : imgs)
+    for (const GpuImage* i : e.imgs)
         if (i && i == img) return true;
     return false;
 }
@@ -93,7 +110,7 @@ bool entry_touches(const Pending& e, const Targets& t) {
 }  // namespace
 
 bool clears_pending_image(const GpuImage* img) {
-    if (!img) return false;
+    if (!img || g_list.empty() || !(g_pending_bloom & image_bloom_bit(img))) return false;
     for (const Pending& e : g_list)
         if (entry_has_image(e, img)) return true;
     return false;
@@ -198,6 +215,7 @@ uint32_t clears_apply(const Targets& t, VkRenderingAttachmentInfo* colors, VkRen
         it = g_list.erase(it);
         g_as_load++;
     }
+    if (cleared) rebuild_pending_bloom();
     return cleared;
 }
 
@@ -281,6 +299,7 @@ static void flush_entry(VkCommandBuffer cb, Pending e) {
 void clears_flush(VkCommandBuffer cb) {
     std::vector<Pending> all;
     all.swap(g_list);
+    g_pending_bloom = 0;
     for (const Pending& e : all) flush_entry(cb, e);
     g_flush_reason = 14;
 }
@@ -298,6 +317,7 @@ void clears_flush_other(VkCommandBuffer cb, const Targets& t) {
             ++it;
         }
     }
+    if (!run.empty()) rebuild_pending_bloom();
     for (const Pending& e : run) flush_entry(cb, e);
     g_flush_reason = 14;
 }
@@ -305,7 +325,7 @@ void clears_flush_other(VkCommandBuffer cb, const Targets& t) {
 void clears_flush_image(VkCommandBuffer cb, uint64_t guest_texture) {
     if (!clears_v2() || g_list.empty() || !guest_texture) return;
     const GpuImage* img = image_of(guest_texture);
-    if (!img) return;
+    if (!img || !(g_pending_bloom & image_bloom_bit(img))) return;
     std::vector<Pending> run;
     for (auto it = g_list.begin(); it != g_list.end();) {
         if (entry_has_image(*it, img)) {
@@ -315,11 +335,12 @@ void clears_flush_image(VkCommandBuffer cb, uint64_t guest_texture) {
             ++it;
         }
     }
+    if (!run.empty()) rebuild_pending_bloom();
     for (const Pending& e : run) flush_entry(cb, e);
     g_flush_reason = 14;
 }
 
-void clears_begin_submit() { g_list.clear(); }
+void clears_begin_submit() { g_list.clear(), g_pending_bloom = 0; }
 bool clears_keep_pending() { return clears_v2(); }
 
 void clears_log() {
@@ -413,6 +434,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
                         ++it;
                     }
                 for (const Pending& r : run) clears_flush_reason(12), flush_entry(cb, r);
+                if (!run.empty()) rebuild_pending_bloom();
             }
             Pending* e = same();
             if (!e) g_list.push_back({true, t}), e = &g_list.back();
@@ -424,6 +446,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
                 if (a.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) e->depth.depthStencil.stencil = uint32_t(c.i[0]);
                 e->ds |= a.aspectMask;
             }
+            refresh_pending_images(*e);
+            rebuild_pending_bloom();
             g_deferred++;
             replay::trace_pass("clear deferred: slot, mask", t, color ? c.n : 8, c.mask);
             return;

@@ -2,8 +2,9 @@
 // resources, draws). Everything here runs under the GPU lock taken by gpu_submit / gpu_present.
 #pragma once
 
+#include <algorithm>
+#include <climits>
 #include <cstdlib>
-#include <cmath>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@ struct GpuImage {
     // NX_TEX_AUDIT (nvn_pipeline.cpp tex_audit): a hash of the guest memory its last upload read, and when it was
     // checked. On the image, so textures that share it (same memory) are compared with what it holds.
     uint64_t audit_hash = 0, audit_frame = 0;
+    uint64_t upload_sample_hash = 0, upload_storage_size = 0, last_memory = 0;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;  // every level and layer
@@ -26,6 +28,8 @@ struct GpuImage {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     bool rendered = false;  // written by the GPU: never re-uploaded from guest memory
     bool uploaded = false;  // filled from the texture's pool memory
+    bool retired = false;   // owner texture finalized or re-initialized
+    bool in_free_pool = false;
     // Given texels by nvnTextureWriteTexels: those never reach guest memory here, so it is not uploaded from there
     // again (a pool flush over it wiped the light probes' direction map, docs/nvn/DEBUG.md #49).
     bool texels = false;
@@ -42,21 +46,45 @@ struct GpuImage {
     bool hud = false;         // NX_HUD_1080: a 1280x720 render target made at 1920x1080 or 1600x900 (hud_1080_texture)
     bool shadow = false;      // NX_MALI_LOW_SHADOWS: 0.5x downscaled shadow depth map
     bool low_3d = false;      // NX_LOW_3D: 0.75x downscaled 3D render target (720x405)
+    bool bloom_cleared = false;     // cleared to black when NX_DISABLE_BLOOM skips P5R's blur passes
+    bool is_window_target = false;  // presented by gpu_present (only present_crop region is read)
+    int32_t present_crop_x = 0, present_crop_y = 0, present_crop_w = 0, present_crop_h = 0;
 };
 
-// NX_LOW_3D (nvn_image.cpp): 3D scene render targets (960x540) are created at 720x405 (0.75x)
-// to dramatically cut GPU fillrate on low-end Mali, while HUD/menus stay at 720p.
+// NX_LOW_3D (nvn_image.cpp): 3D scene render targets (960x540) are created at 720x405 (0.75x, 480p) or 640x360 (0.667x, 360p)
+// to dramatically cut GPU fillrate on low-end GPUs, while HUD/menus and swapchain stay at crisp 720p/1080p.
 bool low_3d_on();
+int32_t low_3d_num();
+int32_t low_3d_den();
+inline int32_t low_3d_down(int64_t v) {
+    const int64_t r = (v * low_3d_num()) / low_3d_den();
+    return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
+}
+inline int32_t low_3d_down_end(int64_t v) {
+    const int64_t den = low_3d_den();
+    const int64_t r = (v * low_3d_num() + (den - 1)) / den;
+    return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
+}
+inline float low_3d_scale() { return float(low_3d_num()) / float(low_3d_den()); }
 bool low_3d_texture(const Texture& t);
 
-// NX_HUD_RES (nvn_image.cpp): resize handheld 1280x720 or docked 1920x1080 UI targets to a selected output height.
-// Guest pixel spans on such an image (viewports, scissors, copy and clear rectangles, the window crop) are scaled the
-// same way; NX_HUD_RES=native follows the Android window height.
+// NX_HUD_1080 (nvn_image.cpp): render targets of the handheld screen's size, 1280x720, are made at 3/2 of it,
+// 1920x1080, so the 2D layers drawn into them (a game's HUD, menus and the window) reach the screen at the size their
+// art was made for while the 3D keeps its own targets. NX_HUD_RES=900: at 5/4 instead, 1600x900 (a third fewer pixels
+// for the GPU, art shrunk 1.2x instead of 1.5x). Guest pixel spans on such an image (viewports, scissors, copy and
+// clear rectangles, the window crop) are scaled the same way: offsets rounded down, ends up.
 struct Texture;
 bool hud_1080_texture(const Texture& t);
-float hud_scale();
-inline int32_t hud_up(int32_t v) { return int32_t(std::floor(float(v) * hud_scale())); }
-inline int32_t hud_up_end(int32_t v) { return int32_t(std::ceil(float(v) * hud_scale())); }
+int32_t hud_quarters();  // the scale in quarters: 6 (1080p) or 5 (900p)
+inline int32_t hud_up(int64_t v) {
+    const int64_t r = (v * hud_quarters()) >> 2;
+    return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
+}
+inline int32_t hud_up_end(int64_t v) {
+    const int64_t r = (v * hud_quarters() + 3) >> 2;
+    return int32_t(std::clamp<int64_t>(r, INT32_MIN, INT32_MAX));
+}
+inline float hud_scale() { return float(hud_quarters()) / 4.0f; }
 
 VkDevice vk_device();
 bool vk_depth_clip_control();
@@ -117,7 +145,6 @@ bool is_powervr();
 bool gpu_require_subgroup32();  // compute pipelines pin the subgroup size to 32 (nvn_pipeline.cpp)
 bool gpu_is_integrated();  // the device in use is an integrated GPU (set when the device is made)
 VkPhysicalDevice vk_physical();
-std::string vk_device_name();
 // What the device offers for a GPU-side video picture (nvn_caps.cpp, filled in when the device is made): the Android
 // external memory extensions and whether the planes of an NV12 picture can be sampled. Read-only, and nothing here
 // enables an extension or changes a device. hle_movie.cpp reports it and takes the path it can (see its header).
@@ -219,6 +246,13 @@ void debug_dump_add(uint64_t texture);  // nvn_debug.cpp: read back at the end o
 // offline (the battle portrait's specks).
 void debug_hud_note(uint64_t target, const std::vector<uint64_t>& textures);
 void debug_hud_dump(uint64_t frame);
+// In-memory runtime capture hotkey (works in NX_RELEASE builds when NX_ENABLE_LOG=1, e.g. Android 3-finger tap):
+// arms 1-frame draw trace + HUD texture dump + 2-frame presented PPM readback without file polling.
+void debug_arm_hotkey_trace();
+void debug_request_capture();
+// Replay-thread monotonic frame counter incremented at the end of gpu_present() / present_headless(),
+// so all submits belonging to one presented frame observe the same ID even under NX_REPLAY_THREAD=1.
+uint64_t replay_frame_id();
 
 // nvn_frames.cpp: submits that are not waited for (NX_PIPELINED, NX_ASYNC_GPU). Slots of command buffers, fences,
 // descriptor pool and ring stretch; retired (fences waited, write-backs copied if not yet) on reuse, when the ring is
@@ -267,6 +301,9 @@ void frame_log(uint64_t frames);  // the mode's counters, with the timing log
 void free_retired_images(uint64_t completed);
 // A GPU-written image of a destroyed texture with the same memory and shape (nvn_frames.cpp), or null.
 std::shared_ptr<GpuImage> reuse_image(const Texture& t);  // images of textures destroyed before submit `completed` + 1
+std::shared_ptr<GpuImage> take_free_image(const GpuImage& proto);
+bool claim_free_image(const std::shared_ptr<GpuImage>& img);
+uint64_t tex_sample_hash(const uint8_t* p, uint64_t size);
 
 // nvn_debug.cpp: NX_DUMP_FRAMES, the presented texture read back (recorded into the present's command buffer, written
 // after its fence).
@@ -356,7 +393,7 @@ void submit_lists_reset();  // at each submit's start (draw_begin_submit)
 void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list);  // nvn_copy.cpp: texture copies
 void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list);    // buffer -> texture
 void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list);  // nvnCommandBufferClearTexture
-void forget_image_views(const GpuImage& img);
+void forget_image_views(const GpuImage& img, bool keep_default_view);
 // nvn_debug.cpp: NX_SNAP_DRAWS mid-frame snapshots of colour target 0.
 bool debug_snap_wanted(uint64_t draw);
 // nvn_occlusion.cpp: P5R's occlusion queries (ResetCounter / ReportCounter of samples passed) and the draws they
@@ -382,8 +419,14 @@ inline void occlusion_query_end(VkCommandBuffer cb, int32_t q) {
     if (q >= 0) occlusion_query_end_slow(cb, q);
 }
 // A conditional draw as an indirect draw counted by its object's query; false: not conditional, draw it as it is.
-bool occlusion_draw(VkCommandBuffer cb, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
-                    int32_t vertex_offset, uint32_t first_instance);
+extern int32_t g_conditional_query;
+bool occlusion_draw_slow(VkCommandBuffer cb, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
+                         int32_t vertex_offset, uint32_t first_instance);
+inline bool occlusion_draw(VkCommandBuffer cb, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
+                           int32_t vertex_offset, uint32_t first_instance) {
+    if (__builtin_expect(g_conditional_query < 0, 1)) return false;
+    return occlusion_draw_slow(cb, indexed, count, instances, first, vertex_offset, first_instance);
+}
 void occlusion_log();
 
 // nvn_debug.cpp: NX_ZERO_DRAWS, shader pairs whose draws produce no pixel.

@@ -10,9 +10,42 @@ layout(push_constant) uniform P {
     vec4 off;   // xy: rot offset; z: sharpness exp2(-stops); w: target width / height (upright)
     vec4 box;   // x0 y0 w h
     vec4 crop;  // u0 v0 du dv
+    vec4 post;  // x: CAS strength, y: vibrance, z: contrast, w: reserved
 } p;
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 color;
+
+vec3 apply_color(vec3 c, float vib, float con, float style) {
+    if (style > 0.5) {
+        c = max(c - vec3(0.028), vec3(0.0)) / 0.972;
+        vec3 s = c * c * (3.0 - 2.0 * c);
+        c = mix(c, s, con);
+        float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float shadowW = clamp(1.0 - luma * 2.2, 0.0, 1.0);
+        c += vec3(-0.015, -0.005, 0.028) * shadowW;
+        float redDom = clamp((c.r - max(c.g, c.b)) * 2.2, 0.0, 1.0);
+        float goldDom = clamp((min(c.r, c.g) - c.b) * 1.8, 0.0, 1.0);
+        float mx = max(c.r, max(c.g, c.b));
+        float mn = min(c.r, min(c.g, c.b));
+        float sat = mx - mn;
+        c = mix(vec3(luma), c, 1.0 + vib * (1.0 - sat * 0.45));
+        c.r += redDom * 0.09;
+        c.rg += vec2(0.04, 0.025) * goldDom;
+        return clamp(c, 0.0, 1.0);
+    }
+    if (vib > 0.001) {
+        float mx = max(c.r, max(c.g, c.b));
+        float mn = min(c.r, min(c.g, c.b));
+        float sat = mx - mn;
+        float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        c = mix(vec3(luma), c, 1.0 + vib * (1.0 - sat * 0.65));
+    }
+    if (con > 0.001) {
+        vec3 s = c * c * (3.0 - 2.0 * c);
+        c = mix(c, s, con);
+    }
+    return clamp(c, 0.0, 1.0);
+}
 
 void tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len2, float lob, float clp, vec3 c) {
     vec2 v = vec2(off.x * dir.x + off.y * dir.y, off.x * (-dir.y) + off.y * dir.x);
@@ -89,7 +122,10 @@ void main() {
     if (dirR < (1.0 / 32.0)) {
         vec2 afp = abs(fp);
         vec3 base = mix(mix(sC, sHx, afp.x), mix(sVy, sQ, afp.x), afp.y);
-        color = vec4(clamp(base + delta * 0.5, minQ, maxQ), 1.0);
+        vec3 res = clamp(base + delta * 0.5, minQ, maxQ);
+        if (p.post.y > 0.001 || p.post.z > 0.001 || p.post.w > 0.5)
+            res = apply_color(res, p.post.y, p.post.z, p.post.w);
+        color = vec4(res, 1.0);
         return;
     }
 
@@ -116,5 +152,8 @@ void main() {
     tap(aC, aW, vec2(q_off)      - fp, dir, len2, lob, clp, sQ);
 
     vec3 upscaled = clamp(aC / max(aW, 1e-4), minQ, maxQ);
-    color = vec4(clamp(upscaled + delta * 0.5, max(vec3(0.0), minQ - 0.06), min(vec3(1.0), maxQ + 0.06)), 1.0);
+    vec3 res = clamp(upscaled + delta * 0.5, max(vec3(0.0), minQ - 0.06), min(vec3(1.0), maxQ + 0.06));
+    if (p.post.y > 0.001 || p.post.z > 0.001 || p.post.w > 0.5)
+        res = apply_color(res, p.post.y, p.post.z, p.post.w);
+    color = vec4(res, 1.0);
 }

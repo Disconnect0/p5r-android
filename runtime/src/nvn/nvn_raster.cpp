@@ -91,13 +91,20 @@ bool raster_command(const Cmd& c) {
             uint8_t* v = c.op == Cmd::SetStencilRef    ? s.stencil_ref
                          : c.op == Cmd::SetStencilMask ? s.stencil_write_mask
                                                        : s.stencil_compare_mask;
-            // Apply to both faces when front-only or back-only is set, because negative-height viewport flips face
-            // orientation relative to NVN when front_face is not explicitly re-specified.
-            if (c.mask & 3) v[0] = v[1] = uint8_t(c.n);
+            if (c.mask & 3) {
+                const uint8_t nv = uint8_t(c.n);
+                bool changed = false;
+                if ((c.mask & 1) && v[0] != nv) v[0] = nv, changed = true;
+                if ((c.mask & 2) && v[1] != nv) v[1] = nv, changed = true;
+                if (changed) replay::g_dynamic_state_version++;
+            }
             return true;
         }
         case Cmd::SetPolygonOffsetClamp:
-            s.bias_factor = c.f[0], s.bias_units = c.f[1], s.bias_clamp = c.f[2];
+            if (s.bias_factor != c.f[0] || s.bias_units != c.f[1] || s.bias_clamp != c.f[2]) {
+                s.bias_factor = c.f[0], s.bias_units = c.f[1], s.bias_clamp = c.f[2];
+                replay::g_dynamic_state_version++;
+            }
             return true;
         case Cmd::SetDepthBounds: {
             // Recorded only: MoltenVK has no depthBounds feature (Metal has no depth bounds test), and Wonder keeps
@@ -111,6 +118,7 @@ bool raster_command(const Cmd& c) {
         case Cmd::SetDepthClamp:
             if (s.depth_clamp != (c.n != 0)) {
                 s.depth_clamp = c.n != 0;
+                replay::g_dynamic_state_version++;
                 if (!vk_dynamic_caps().depth_clamp_enable) replay::g_pipeline_state_version++;
             }
             return true;
@@ -120,15 +128,23 @@ bool raster_command(const Cmd& c) {
 
 void stencil_dynamic(VkCommandBuffer cb) {
     const State& s = g_state;
-    auto set = [&](PFN_vkCmdSetStencilReference fn, const uint8_t* v) {
-        // Uniformly bind stencil state to FRONT_AND_BACK so inverted-winding UI primitives never miss.
-        fn(cb, VK_STENCIL_FACE_FRONT_AND_BACK, v[0]);
+    auto set = [&](PFN_vkCmdSetStencilReference fn, const uint8_t* v, uint8_t def_val) {
+        // If one face was left at the default (e.g. SetStencilRef(FRONT, ref) followed by SetStencilRef(BACK, 0)),
+        // propagate the active face's value to both faces so negative-height viewport winding never misses.
+        const uint8_t f0 = (v[0] == def_val && v[1] != def_val) ? v[1] : v[0];
+        const uint8_t f1 = (v[1] == def_val && v[0] != def_val) ? v[0] : v[1];
+        if (f0 == f1) {
+            fn(cb, VK_STENCIL_FACE_FRONT_AND_BACK, f0);
+        } else {
+            fn(cb, VK_STENCIL_FACE_FRONT_BIT, f0);
+            fn(cb, VK_STENCIL_FACE_BACK_BIT, f1);
+        }
     };
     static const bool old = std::getenv("NX_OLD_STENCIL") != nullptr;  // bisecting: reference 0, masks 0xFF
     static const uint8_t zero[2] = {0, 0}, all[2] = {0xFF, 0xFF};
-    set(p_vkCmdSetStencilReference, old ? zero : s.stencil_ref);
-    set(p_vkCmdSetStencilCompareMask, old ? all : s.stencil_compare_mask);
-    set(p_vkCmdSetStencilWriteMask, old ? all : s.stencil_write_mask);
+    set(p_vkCmdSetStencilReference, old ? zero : s.stencil_ref, 0);
+    set(p_vkCmdSetStencilCompareMask, old ? all : s.stencil_compare_mask, 0xFF);
+    set(p_vkCmdSetStencilWriteMask, old ? all : s.stencil_write_mask, 0xFF);
 }
 
 void depth_bias_dynamic(VkCommandBuffer cb, bool slack) {

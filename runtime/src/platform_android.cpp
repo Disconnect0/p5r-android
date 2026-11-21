@@ -57,7 +57,6 @@
 
 namespace nx::nvn {
 void pipeline_cache_save();
-std::string vk_device_name();
 }
 
 #ifndef MAP_FIXED_NOREPLACE
@@ -158,6 +157,7 @@ namespace {
 struct CpuMasks {
     long num_cores = 0;
     cpu_set_t big{};
+    cpu_set_t main_non_replay{};
     cpu_set_t little{};
     bool valid = false;
 };
@@ -187,23 +187,40 @@ const CpuMasks& get_cpu_masks() {
             }
         }
         CPU_ZERO(&m.big);
+        CPU_ZERO(&m.main_non_replay);
         CPU_ZERO(&m.little);
         if (any_freq && max_f > min_f) {
             unsigned long threshold = min_f + (max_f - min_f) / 4;
+            int last_big = -1;
+            int big_count = 0;
             for (int i = 0; i < n; ++i) {
-                if (freqs[i] > threshold) CPU_SET(i, &m.big);
-                else CPU_SET(i, &m.little);
+                if (freqs[i] > threshold) {
+                    CPU_SET(i, &m.big);
+                    last_big = i;
+                    big_count++;
+                } else {
+                    CPU_SET(i, &m.little);
+                }
             }
             if (CPU_COUNT(&m.big) > 0 && CPU_COUNT(&m.little) > 0) {
+                for (int i = 0; i < n; ++i) {
+                    if (big_count >= 2 && i == last_big) continue;
+                    CPU_SET(i, &m.main_non_replay);
+                }
                 m.valid = true;
                 return m;
             }
         }
         // Fallback for 6+2 8-core SoCs if sysfs frequencies are unreadable
         CPU_ZERO(&m.big);
+        CPU_ZERO(&m.main_non_replay);
         CPU_ZERO(&m.little);
-        for (int i = 0; i < 6; ++i) CPU_SET(i, &m.little);
+        for (int i = 0; i < 6; ++i) {
+            CPU_SET(i, &m.little);
+            CPU_SET(i, &m.main_non_replay);
+        }
         CPU_SET(6, &m.big);
+        CPU_SET(6, &m.main_non_replay);
         CPU_SET(7, &m.big);
         m.valid = true;
         return m;
@@ -267,6 +284,23 @@ void set_thread_priority(int priority) {
     if (rc != 0) {
         __android_log_print(ANDROID_LOG_WARN, "p5r", "Failed to set thread priority %d: errno %d", priority, errno);
     }
+}
+
+void pin_thread_tid_to_little_cores(int64_t tid) {
+    if (tid <= 0) return;
+    const CpuMasks& m = get_cpu_masks();
+    if (!m.valid) return;
+    (void)sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), &m.little);
+    (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), 0);
+}
+
+void pin_thread_tid_to_big_cores(int64_t tid, int priority) {
+    if (tid <= 0) return;
+    const CpuMasks& m = get_cpu_masks();
+    if (!m.valid) return;
+    const cpu_set_t* target = (priority > -10 && CPU_COUNT(&m.main_non_replay) > 0) ? &m.main_non_replay : &m.big;
+    (void)sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), target);
+    (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), priority);
 }
 
 // ---- sampling profiler (simpleperf is not always allowed on retail phones) ------------------------------------
@@ -463,16 +497,15 @@ void window_size(uint32_t& w, uint32_t& h) {
     std::string nr = setting("NX_RES");
     std::string res = setting("RESOLUTION");
     std::string r = setting("resolution");
+    std::string hud1080 = setting("NX_HUD_1080");
+    const uint32_t ui_h = (hud1080 == "1") ? 1080u : 720u;
 
-    auto parse_target_h = [](const std::string& s) -> uint32_t {
-        if (s == "native") return UINT32_MAX;
-        if (s == "360p" || s == "360") return 360;
-        if (s == "480p" || s == "480") return 480;
-        if (s == "540p" || s == "540") return 720;
-        if (s == "720p" || s == "720") return 720;
+    auto parse_target_h = [ui_h](const std::string& s) -> uint32_t {
+        if (s == "360p" || s == "360") return ui_h;
+        if (s == "480p" || s == "480") return ui_h;
+        if (s == "540p" || s == "540") return ui_h;
+        if (s == "720p" || s == "720") return ui_h;
         if (s == "1080p" || s == "1080") return 1080;
-        if (s == "1440p" || s == "1440") return 1440;
-        if (s == "2160p" || s == "2160") return 2160;
         unsigned cw = 0, ch = 0;
         if (!s.empty() && std::sscanf(s.c_str(), "%ux%u", &cw, &ch) == 2 && ch) return ch;
         return 0;
@@ -483,7 +516,6 @@ void window_size(uint32_t& w, uint32_t& h) {
     if (!target_h) target_h = parse_target_h(r);
 
     if (target_h) {
-        if (target_h == UINT32_MAX) { w = sw; h = sh; return; }
         float scale = float(target_h) / float(sh);
         w = uint32_t(float(sw) * scale + 0.5f) & ~1u;
         h = target_h & ~1u;
@@ -714,9 +746,12 @@ const char* vulkan_surface_extension() { return VK_KHR_ANDROID_SURFACE_EXTENSION
 
 int vulkan_create_surface(void* instance, void* native_window, uint64_t* surface, void* gipa) {
     ANativeWindow* win = static_cast<ANativeWindow*>(native_window);
+    const char* fsr_env = std::getenv("NX_FSR");
+    const std::string fsr_cfg = setting("NX_FSR");
+    const bool fsr_enabled = (fsr_env && fsr_env[0] == '1') || fsr_cfg == "1";
     uint32_t rw = 0, rh = 0;
     window_size(rw, rh);
-    if (win && rw && rh) {
+    if (win && rw && rh && !fsr_enabled) {
         int32_t cur_w = ANativeWindow_getWidth(win), cur_h = ANativeWindow_getHeight(win);
         bool portrait = cur_w < cur_h;
         int32_t bw = int32_t(portrait ? std::min(rw, rh) : std::max(rw, rh));
@@ -748,13 +783,16 @@ struct sigaction g_previous[32];  // the handlers before ours (debuggerd's)
 
 void crash(int sig, siginfo_t* info, void* uc) {
     if ((sig == SIGSEGV || sig == SIGBUS) && nx::plat::write_watch_fault(info->si_addr)) return;  // write_watch.cpp
+    nx::begin_crash_log();
     nx::log("CRASH: signal %d, fault address %p", sig, info->si_addr);
 #if NX_NCE
     // In the game's own code: its registers are in the signal's context, not in the thread's CPU.
+    bool in_guest = false;
     if (nx::self_thread()) {
         static nx::CPU fault;
         uint64_t pc = 0;
         if (nx::nce::guest_fault_context(uc, fault, pc)) {
+            in_guest = true;
             nx::log("  in guest code at %s, lr %s, sp %llx", nx::describe(pc).c_str(), nx::describe(fault.x[30]).c_str(),
                     (unsigned long long)fault.x[31]);
             for (int k = 0; k < 32; k += 4)
@@ -762,6 +800,27 @@ void crash(int sig, siginfo_t* info, void* uc) {
                         (unsigned long long)fault.x[k + 1], (unsigned long long)fault.x[k + 2], (unsigned long long)fault.x[k + 3]);
             nx::backtrace(fault);
         }
+    }
+    if (!in_guest && uc) {
+        const mcontext_t& m = static_cast<const ucontext_t*>(uc)->uc_mcontext;
+        const uintptr_t host_pc = uintptr_t(m.pc);
+        const uintptr_t host_lr = uintptr_t(m.regs[30]);
+        Dl_info dpc{}, dlr{};
+        const bool has_pc = dladdr(reinterpret_cast<const void*>(host_pc), &dpc) != 0;
+        const bool has_lr = dladdr(reinterpret_cast<const void*>(host_lr), &dlr) != 0;
+        const char* active_hle = nullptr;
+        if (nx::KThread* kt = nx::self_thread()) active_hle = kt->hle.load(std::memory_order_relaxed);
+        nx::log("  in host code: hle=%s", active_hle ? active_hle : "(none)");
+        nx::log("  host pc %#llx (%s+%#llx %s+%#llx)", (unsigned long long)host_pc,
+                has_pc && dpc.dli_fname ? dpc.dli_fname : "?",
+                (unsigned long long)(has_pc && dpc.dli_fbase ? host_pc - uintptr_t(dpc.dli_fbase) : 0),
+                has_pc && dpc.dli_sname ? dpc.dli_sname : "?",
+                (unsigned long long)(has_pc && dpc.dli_saddr ? host_pc - uintptr_t(dpc.dli_saddr) : 0));
+        nx::log("  host lr %#llx (%s+%#llx %s+%#llx)", (unsigned long long)host_lr,
+                has_lr && dlr.dli_fname ? dlr.dli_fname : "?",
+                (unsigned long long)(has_lr && dlr.dli_fbase ? host_lr - uintptr_t(dlr.dli_fbase) : 0),
+                has_lr && dlr.dli_sname ? dlr.dli_sname : "?",
+                (unsigned long long)(has_lr && dlr.dli_saddr ? host_lr - uintptr_t(dlr.dli_saddr) : 0));
     }
 #endif
     if (nx::self_thread()) {
@@ -785,8 +844,7 @@ void crash(int sig, siginfo_t* info, void* uc) {
 }
 
 void game_thread(void*) {
-    nx::plat::place_fast_cores();
-    nx::plat::set_thread_priority(-4);
+    nx::plat::pin_thread_tid_to_big_cores(nx::plat::current_thread_id(), -4);
     nx::plat::perf_hint_thread();
     try {
         nx::boot();
@@ -829,7 +887,8 @@ void on_cmd(android_app* app, int32_t cmd) {
             g_window_gen++;
             g_visible = true;
             const char* fsr = std::getenv("NX_FSR");
-            if (!(fsr && fsr[0] == '1')) {
+            const std::string fsr_cfg = setting("NX_FSR");
+            if (!((fsr && fsr[0] == '1') || fsr_cfg == "1")) {
                 uint32_t rw = 0, rh = 0;
                 window_size(rw, rh);
                 if (rw && rh && app->window) {
@@ -926,11 +985,48 @@ void hide_system_bars(JNIEnv* env, jobject activity) {
     if (env->ExceptionCheck()) env->ExceptionClear();
 }
 
+std::mutex g_toast_m;
+std::string g_toast_msg;
+
+void show_toast_ui(JNIEnv* env, jobject activity, const std::string& msg) {
+    if (!env || !activity || msg.empty()) return;
+    jclass toast_cls = env->FindClass("android/widget/Toast");
+    jmethodID make_text = toast_cls
+                              ? env->GetStaticMethodID(toast_cls, "makeText",
+                                                       "(Landroid/content/Context;Ljava/lang/CharSequence;I)Landroid/widget/Toast;")
+                              : nullptr;
+    jmethodID show_mid = toast_cls ? env->GetMethodID(toast_cls, "show", "()V") : nullptr;
+    jstring jmsg = (make_text && show_mid && !env->ExceptionCheck()) ? env->NewStringUTF(msg.c_str()) : nullptr;
+    jobject toast = (jmsg && !env->ExceptionCheck())
+                        ? env->CallStaticObjectMethod(toast_cls, make_text, activity, jmsg, jint(0))
+                        : nullptr;
+    if (toast && !env->ExceptionCheck()) env->CallVoidMethod(toast, show_mid);
+    if (toast) env->DeleteLocalRef(toast);
+    if (jmsg) env->DeleteLocalRef(jmsg);
+    if (toast_cls) env->DeleteLocalRef(toast_cls);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
 int on_ui_request(int fd, int, void*) {
+    bool do_immersive = false;
+    bool do_toast = false;
     char buf[16];
-    while (read(fd, buf, sizeof buf) > 0) {
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof buf)) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            if (buf[i] == 1) do_immersive = true;
+            else if (buf[i] == 2) do_toast = true;
+        }
     }
-    if (g_activity) hide_system_bars(g_activity->env, g_activity->clazz);
+    if (g_activity && do_immersive) hide_system_bars(g_activity->env, g_activity->clazz);
+    if (g_activity && do_toast) {
+        std::string msg;
+        {
+            std::lock_guard lk(g_toast_m);
+            msg = g_toast_msg;
+        }
+        show_toast_ui(g_activity->env, g_activity->clazz, msg);
+    }
     return 1;
 }
 
@@ -941,9 +1037,21 @@ void request_immersive() {
 
 }  // namespace
 
-extern "C" JNIEXPORT jstring JNICALL Java_io_github_p5rrecomp_GameActivity_nativeGpuName(JNIEnv* env, jclass) {
-    const std::string name = nx::nvn::vk_device_name();
-    return env->NewStringUTF(name.empty() ? "GPU" : name.c_str());
+namespace nx::plat {
+void show_toast(const char* msg) {
+    if (!msg || !msg[0] || g_ui_pipe[1] < 0) return;
+    {
+        std::lock_guard lk(g_toast_m);
+        g_toast_msg = msg;
+    }
+    char c = 2;
+    (void)write(g_ui_pipe[1], &c, 1);
+}
+}  // namespace nx::plat
+
+// Frames presented so far, for the launcher's FPS counter (GameActivity.nativeFrames, in the game's own process).
+extern "C" JNIEXPORT jlong JNICALL Java_io_github_belmantegu_wonderrecomp_GameActivity_nativeFrames(JNIEnv*, jclass) {
+    return jlong(nx::g_frame.load());
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -956,7 +1064,6 @@ Java_io_github_p5rrecomp_PauseActivity_updateRuntimeOption(JNIEnv* env, jclass, 
         if (value_chars) env->ReleaseStringUTFChars(value, value_chars);
         return;
     }
-    // Keep this bridge scoped to runtime options so a Java UI bug cannot overwrite arbitrary process variables.
     if (std::strncmp(key_chars, "NX_", 3) == 0) setenv(key_chars, value_chars, 1);
     env->ReleaseStringUTFChars(key, key_chars);
     env->ReleaseStringUTFChars(value, value_chars);
@@ -1340,7 +1447,16 @@ extern "C" void android_main(android_app* app) {
     // overriding a variable already set. Android defaults: handheld (720p, the lighter GPU load).
     {
         unsetenv("NX_STRETCH");
-        unsetenv("NX_GAMEPAD_MAP");  // the launcher may have restored the preset since the previous game session
+        unsetenv("NX_ULTRAWIDE");
+        unsetenv("NX_UW_STRETCH_UI");
+        unsetenv("NX_MAX_ANISO");
+        unsetenv("NX_LOD_BIAS");
+        unsetenv("NX_CAS");
+        unsetenv("NX_CAS_STRENGTH");
+        unsetenv("NX_FSR_SHARP");
+        unsetenv("NX_FXAA");
+        unsetenv("NX_COLOR_PROFILE");
+        unsetenv("NX_ASYNC_PIPELINES");
         std::ifstream f(g_root + "/config.txt");
         std::string line;
         while (std::getline(f, line)) {

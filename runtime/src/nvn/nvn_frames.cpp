@@ -59,7 +59,7 @@ std::recursive_mutex& gpu_lock();  // nvn_vk.cpp
 
 namespace {
 
-constexpr uint32_t kMaxSlots = 16;
+constexpr uint32_t kMaxSlots = 32;
 constexpr uint32_t kMaxParts = 8;  // command buffers per submit: chunks, the split, the last part
 constexpr uint64_t kFenceTimeout = 10'000'000'000ull;  // heavy scene/shader transitions on mobile GPUs can take >2 s
 
@@ -85,6 +85,7 @@ struct Slot {
     bool deferred = false;   // write_backs not applied yet (deferred write-backs), their ranges in g_deferred
     uint32_t wb_upto = 0;    // the parts whose fences their results need (the split's, or all)
     bool replay = false;  // a submit's replay (not a present)
+    bool has_draw_work = false;
     uint64_t binds_at_split = 0;  // replay::written_bind_count() at the split
     uint64_t begin_ns = 0;
 };
@@ -132,7 +133,37 @@ struct DeferredRange {
 std::vector<DeferredRange> g_deferred;
 const uint8_t* g_deferred_lo = nullptr;  // their span: most reads are outside it
 const uint8_t* g_deferred_hi = nullptr;
+uint64_t g_deferred_page_bits[64] = {};
 std::atomic<uint32_t> g_deferred_slots{0};
+
+inline void mark_deferred_pages(const uint8_t* lo, const uint8_t* hi) {
+    if (!lo || hi <= lo) return;
+    const uintptr_t start_page = reinterpret_cast<uintptr_t>(lo) >> 16;
+    const uintptr_t end_page = (reinterpret_cast<uintptr_t>(hi) - 1) >> 16;
+    if (end_page - start_page >= 4096) {
+        std::memset(g_deferred_page_bits, 0xFF, sizeof g_deferred_page_bits);
+        return;
+    }
+    for (uintptr_t pg = start_page; pg <= end_page; pg++) {
+        const uint32_t bit = uint32_t((pg ^ (pg >> 12)) & 4095);
+        g_deferred_page_bits[bit >> 6] |= 1ull << (bit & 63);
+    }
+}
+
+inline bool may_overlap_deferred_pages(const uint8_t* p, uint64_t size) {
+    const uintptr_t start_page = reinterpret_cast<uintptr_t>(p) >> 16;
+    const uintptr_t end_page = (reinterpret_cast<uintptr_t>(p) + size - 1) >> 16;
+    if (start_page == end_page) {
+        const uint32_t bit = uint32_t((start_page ^ (start_page >> 12)) & 4095);
+        return (g_deferred_page_bits[bit >> 6] >> (bit & 63)) & 1;
+    }
+    if (end_page - start_page > 16) return true;
+    for (uintptr_t pg = start_page; pg <= end_page; pg++) {
+        const uint32_t bit = uint32_t((pg ^ (pg >> 12)) & 4095);
+        if ((g_deferred_page_bits[bit >> 6] >> (bit & 63)) & 1) return true;
+    }
+    return false;
+}
 // A command pool per slot, reset whole when the slot is taken again (PHASE3.md C2): resetting each part's command
 // buffer was 6-9% of the replay thread on Adreno (it frees the driver's per-pass objects). NX_CB_RESET=1: as before.
 bool g_slot_pools = false;
@@ -190,7 +221,7 @@ StagingEntry alloc_or_reuse_staging(uint64_t want_size, VkBufferUsageFlags usage
     VkDevice d = vk_device();
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = chunk;
-    bi.usage = usage;
+    bi.usage = usage | kUploadUsage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     VkBuffer buf = VK_NULL_HANDLE;
     if (p_vkCreateBuffer(d, &bi, nullptr, &buf) != VK_SUCCESS) return {};
     VkMemoryRequirements req{};
@@ -237,6 +268,27 @@ ReuseKey reuse_key(const Texture& t) {
 std::map<ReuseKey, std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_reusable;  // key -> (kept at, image)
 uint64_t g_reuse_clock = 0, g_reused = 0;
 
+struct FreeImageKey {
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkImageAspectFlags aspect = 0;
+    uint32_t width = 0, height = 0, depth = 0, levels = 0, layers = 0;
+    VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
+    bool mutable_format = false, storage = false, cube_compat = false, alpha_from_r = false;
+    bool operator<(const FreeImageKey& o) const {
+        return std::tie(format, aspect, width, height, depth, levels, layers, view_type, mutable_format, storage,
+                        cube_compat, alpha_from_r) <
+               std::tie(o.format, o.aspect, o.width, o.height, o.depth, o.levels, o.layers, o.view_type,
+                        o.mutable_format, o.storage, o.cube_compat, o.alpha_from_r);
+    }
+};
+FreeImageKey free_image_key(const GpuImage& img) {
+    return {img.format,   img.aspect,     img.width,          img.height,  img.depth,      img.levels,
+            img.layers,   img.view_type,  img.mutable_format, img.storage, img.cube_compat, img.alpha_from_r};
+}
+std::map<FreeImageKey, std::vector<std::shared_ptr<GpuImage>>> g_free_images;
+uint32_t g_free_image_count = 0;
+constexpr uint32_t kMaxFreeImages = 256;
+
 void wait_fences(const VkFence* fences, uint32_t n) {
     if (!n) return;
     uint64_t t0 = plat::monotonic_ns();
@@ -276,9 +328,11 @@ void undefer(Slot& s) {
                                     [&](const DeferredRange& r) { return r.serial == s.serial; }),
                      g_deferred.end());
     g_deferred_lo = g_deferred_hi = nullptr;
+    std::memset(g_deferred_page_bits, 0, sizeof g_deferred_page_bits);
     for (const DeferredRange& r : g_deferred) {
         if (!g_deferred_lo || r.lo < g_deferred_lo) g_deferred_lo = r.lo;
         if (!g_deferred_hi || r.hi > g_deferred_hi) g_deferred_hi = r.hi;
+        mark_deferred_pages(r.lo, r.hi);
     }
     g_deferred_slots.fetch_sub(1, std::memory_order_relaxed);
 }
@@ -291,6 +345,7 @@ void defer(Slot& s, uint32_t upto) {
         g_deferred.push_back({lo, hi, s.serial});
         if (!g_deferred_lo || lo < g_deferred_lo) g_deferred_lo = lo;
         if (!g_deferred_hi || hi > g_deferred_hi) g_deferred_hi = hi;
+        mark_deferred_pages(lo, hi);
     }
     g_deferred_slots.fetch_add(1, std::memory_order_relaxed);
     g_stats.deferred++;
@@ -372,7 +427,7 @@ void retire_through(uint64_t serial) {
 
 uint32_t replays_in_flight() {
     uint32_t n = 0;
-    for (uint32_t k = 0; k < g_slot_count; k++) n += g_slots[k].serial && g_slots[k].replay;
+    for (uint32_t k = 0; k < g_slot_count; k++) n += g_slots[k].serial && g_slots[k].replay && g_slots[k].has_draw_work;
     return n;
 }
 
@@ -504,7 +559,7 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
     const int requested = (raw_env && raw_env[0]) ? env_int(mode_env) : (pipelined() ? 6 : 2);
     uint32_t frames = uint32_t(std::clamp(requested, 2, 8));
     g_max_replays = frames;
-    g_slot_count = std::min(kMaxSlots, pipelined() ? (frames * 2 + 2) : (frames * 2));
+    g_slot_count = std::min(kMaxSlots, pipelined() ? (frames * 3 + 6) : (frames * 2));
     VkDevice d = vk_device();
     g_slot_pools = std::getenv("NX_CB_RESET") == nullptr;
     for (uint32_t k = 0; k < g_slot_count; k++) {
@@ -528,9 +583,11 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
 #if defined(__ANDROID__)
     if (std::getenv("NX_SUBMIT_CHUNK_DRAWS")) {
         g_chunk_draws = uint64_t(env_int("NX_SUBMIT_CHUNK_DRAWS"));
-    } else if (is_adreno_8xx()) {
-        g_chunk_draws = 0;  // Adreno 8xx driver bug: chunked submissions hang the GPU during battle passes
-        log("nvn/vk: Adreno 8xx GPU detected: chunk submits disabled to prevent GPU hang");
+    } else if (is_adreno_8xx() || pipelined()) {
+        // When pipelined() is active (multiple submits already in flight on the GPU), splitting each submit into
+        // sub-command-buffers adds mid-replay vkQueueSubmit ioctl context switches, ALL_COMMANDS barriers, and
+        // Bound/BoundSets state cache wipes without improving GPU utilization.
+        g_chunk_draws = 0;
     } else {
         g_chunk_draws = 150;
     }
@@ -556,7 +613,7 @@ VkCommandBuffer frame_begin(bool replay) {
     s.pool_used = true;
     g_next = (g_next + 1) % g_slot_count;
     g_begin = g_head;
-    s.replay = replay, s.part = s.queued = s.waited = 0, s.split_part = -1, s.ok = true;
+    s.replay = replay, s.has_draw_work = false, s.part = s.queued = s.waited = 0, s.split_part = -1, s.ok = true;
     s.begin_ns = plat::monotonic_ns();
     g_plan_dispatches = g_seen_dispatches = 0;
     g_chunking = false;
@@ -576,7 +633,9 @@ size_t frame_plan_split(const std::vector<std::shared_ptr<CmdList>>& lists) {
     g_plan_dispatches = g_seen_dispatches = 0;
     g_chunking = g_chunk_draws && g_current, g_chunk_from = UINT64_MAX;  // not with the profile (not called then)
     // NX_COMPUTE_SEPARATE's write-backs are not counted by written_bind_count(): such a submit is waited for whole.
-    if (!pipelined() || off || !g_current || replay::written_separate()) return SIZE_MAX;
+    // When exp_no_write_backs() is active (NX_EXP_NO_WB=1), no compute write-backs are emitted or waited for, so
+    // splitting the command buffer after the last dispatch only adds an unnecessary vkQueueSubmit and barrier.
+    if (!pipelined() || off || !g_current || replay::written_separate() || exp_no_write_backs()) return SIZE_MAX;
     size_t last = SIZE_MAX;
     for (size_t k = 0; k < lists.size(); k++)
         if (uint32_t n = count_dispatches(*lists[k], 0)) g_plan_dispatches += n, last = k;
@@ -600,10 +659,17 @@ VkCommandBuffer frame_split(VkCommandBuffer cb) {
 
 VkCommandBuffer frame_chunk(VkCommandBuffer cb, uint64_t draws, bool pass_open) {
     Slot* s = g_current;
+    if (s && (pass_open || g_plan_dispatches > 0 || (g_chunk_from != UINT64_MAX && draws > g_chunk_from)))
+        s->has_draw_work = true;
     // Two parts are kept for the split and the last one.
-    if (!g_chunking || !s || cb != s->cbs[s->part] || s->part + 2 >= kMaxParts) return cb;
+    if (!g_chunking || !s || cb != s->cbs[s->part] || s->part + 2 >= kMaxParts) {
+        if (g_chunk_from == UINT64_MAX) g_chunk_from = draws;
+        else if (draws > g_chunk_from && s) s->has_draw_work = true;
+        return cb;
+    }
     if (g_chunk_from == UINT64_MAX) g_chunk_from = draws;
     uint64_t since = draws - g_chunk_from;
+    if (since > 0) s->has_draw_work = true;
     // On mobile TBDR GPUs (Mali, Adreno), forcibly breaking an active VkRenderPass
     // mid-pass flushes the entire tile buffer to RAM and can trigger GPU hangs or driver crashes.
     // Default to only splitting at natural render pass boundaries unless
@@ -664,7 +730,7 @@ void frame_submit(VkSemaphore wait, VkSemaphore signal, std::vector<WriteBack> w
         struct Throttle {
             Slot& s;
             ~Throttle() {
-                if (!s.replay) return;
+                if (!s.replay || !s.has_draw_work) return;
                 bool waited = false;
                 while (replays_in_flight() > g_max_replays && retire_oldest()) waited = true;
                 g_stats.throttled += waited;
@@ -889,7 +955,7 @@ uint64_t gpu_write_back_serial() {
 
 void frame_guest_read(const uint8_t* p, uint64_t size) {
     if (!g_deferred_slots.load(std::memory_order_relaxed) || !p || !size) return;
-    if (p >= g_deferred_hi || p + size <= g_deferred_lo) return;
+    if (p >= g_deferred_hi || p + size <= g_deferred_lo || !may_overlap_deferred_pages(p, size)) return;
     uint64_t need = 0;
     for (const DeferredRange& r : g_deferred)
         if (r.lo < p + size && r.hi > p) need = std::max(need, r.serial);
@@ -955,12 +1021,84 @@ void free_retired_images(uint64_t completed) {
     for (auto& img : dead) {
         if (!img || !img->image) continue;
         if (img.use_count() > 1) continue;  // another live texture shares it (image_of): freed with the last one
-        forget_image_views(*img);
+        if (!img->rendered && img->memory && img->view) {
+            std::lock_guard lk(g_grave_lock);
+            if (g_free_image_count < kMaxFreeImages) {
+                img->in_free_pool = true;
+                g_free_images[free_image_key(*img)].push_back(std::move(img));
+                g_free_image_count++;
+                continue;
+            }
+        }
+        forget_image_views(*img, false);
         if (img->view) p_vkDestroyImageView(vk_device(), img->view, nullptr);
         p_vkDestroyImage(vk_device(), img->image, nullptr);
         if (img->memory) p_vkFreeMemory(vk_device(), img->memory, nullptr);
         img->image = VK_NULL_HANDLE, img->memory = VK_NULL_HANDLE, img->view = VK_NULL_HANDLE;
     }
+}
+
+bool claim_free_image(const std::shared_ptr<GpuImage>& img) {
+    if (!img) return false;
+    std::lock_guard lk(g_grave_lock);
+    if (!img->in_free_pool) return true;
+    auto it = g_free_images.find(free_image_key(*img));
+    if (it != g_free_images.end()) {
+        auto& vec = it->second;
+        for (size_t i = 0; i < vec.size(); i++) {
+            if (vec[i].get() == img.get()) {
+                vec.erase(vec.begin() + i);
+                if (vec.empty()) g_free_images.erase(it);
+                if (g_free_image_count > 0) g_free_image_count--;
+                img->in_free_pool = false;
+                img->retired = false;
+                g_reused++;
+                return true;
+            }
+        }
+    }
+    img->in_free_pool = false;
+    img->retired = false;
+    return true;
+}
+
+std::shared_ptr<GpuImage> take_free_image(const GpuImage& proto) {
+    std::shared_ptr<GpuImage> old;
+    {
+        std::lock_guard lk(g_grave_lock);
+        auto it = g_free_images.find(free_image_key(proto));
+        if (it == g_free_images.end() || it->second.empty()) return nullptr;
+        old = std::move(it->second.back());
+        it->second.pop_back();
+        if (it->second.empty()) g_free_images.erase(it);
+        if (g_free_image_count > 0) g_free_image_count--;
+        old->in_free_pool = false;
+        g_reused++;
+    }
+    forget_image_views(*old, true);
+    // Construct a fresh GpuImage control block and transfer only the immutable Vulkan handles so any stale
+    // std::weak_ptr<GpuImage> still in g_live_images for the previous owner's guest pool address expires immediately
+    // and can never alias this VkImage to an unrelated texture/glyph at a different pool address.
+    auto fresh = std::make_shared<GpuImage>();
+    fresh->image = old->image;
+    fresh->memory = old->memory;
+    fresh->view = old->view;
+    fresh->format = old->format;
+    fresh->aspect = old->aspect;
+    fresh->width = old->width;
+    fresh->height = old->height;
+    fresh->levels = old->levels;
+    fresh->layers = old->layers;
+    fresh->depth = old->depth;
+    fresh->view_type = old->view_type;
+    fresh->storage = old->storage;
+    fresh->mutable_format = old->mutable_format;
+    fresh->cube_compat = old->cube_compat;
+    fresh->alpha_from_r = old->alpha_from_r;
+    old->image = VK_NULL_HANDLE;
+    old->memory = VK_NULL_HANDLE;
+    old->view = VK_NULL_HANDLE;
+    return fresh;
 }
 
 // Images of destroyed textures are freed once no submit can use them: the one being recorded now included (a replay
@@ -976,6 +1114,7 @@ Texture::~Texture() {
         slot = {g_reuse_clock, std::move(image)};
         return;
     }
+    image->retired = true;
     g_grave.push_back({g_submitted + 1, std::move(image)});
 }
 
@@ -983,35 +1122,6 @@ Texture::~Texture() {
 // to RGBA8 staged 312 MB in one submit, wrapping over its own data before the GPU had copied it (DEBUG-2 #72). Freed
 // once the submit being recorded is retired (as images in the grave). Falls back to the ring if allocation fails.
 Upload staging_alloc(uint64_t size) {
-    if (async_gpu()) {
-        // Sub-allocate from g_spill_buf or recycle from g_staging_pool first before hitting the kernel allocator.
-        uint64_t s_at = (g_spill_at + 15) & ~15ull;
-        if (g_spill_buf && s_at + size <= g_spill_cap) {
-            const uint64_t want_ser = g_submitted + 1;
-            {
-                std::lock_guard lk(g_grave_lock);
-                for (StagingEntry& se : g_staging) {
-                    if (se.buffer == g_spill_buf) {
-                        se.serial = std::max(se.serial, want_ser);
-                        break;
-                    }
-                }
-            }
-            g_spill_at = s_at + size;
-            return {g_spill_buf, s_at, g_spill_ptr + s_at};
-        }
-        StagingEntry e = alloc_or_reuse_staging(size, kUploadUsage);
-        if (e.ptr) {
-            if (size <= e.cap / 2) {
-                g_spill_buf = e.buffer;
-                g_spill_ptr = e.ptr;
-                g_spill_cap = e.cap;
-                g_spill_at = size;
-            }
-            return {e.buffer, 0, e.ptr};
-        }
-        return upload_alloc(size, 16);
-    }
     StagingEntry e = alloc_or_reuse_staging(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     if (!e.ptr) return upload_alloc(size, 16);
     return {e.buffer, 0, e.ptr};

@@ -42,7 +42,7 @@ VkBlendOp vk_blend_op(uint32_t e) {
 }
 
 VkCompareOp vk_compare(uint32_t f) {
-    switch (f) {
+    switch (f & 0x7F) {
         case 1: return VK_COMPARE_OP_NEVER;
         case 2: return VK_COMPARE_OP_LESS;
         case 3: return VK_COMPARE_OP_EQUAL;

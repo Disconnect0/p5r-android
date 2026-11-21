@@ -59,6 +59,8 @@ std::shared_ptr<EventState> g_vsync = std::make_shared<EventState>();
 
 void vsync_thread() {
     plat::set_thread_name("vsync");
+    plat::set_thread_priority(0);
+    plat::pin_current_thread_to_little_cores("vsync");
     uint64_t next = plat::monotonic_ns();
     for (;;) {
         next += display_period_ns();

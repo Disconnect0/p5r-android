@@ -13,6 +13,29 @@
 
 namespace nx::nvn {
 
+uint64_t hash_memory(const uint8_t* p, uint64_t size);  // nvn_sampler.cpp
+
+uint64_t tex_sample_hash(const uint8_t* p, uint64_t size) {
+    if (!p || !size) return 0;
+    // Hash <= 16 KB textures completely (exact on every glyph/icon/small UI texture; < 2 us on ARM64 CRC32).
+    if (size <= 16384) {
+        uint64_t h = hash_memory(p, size) ^ (size * 0x9E3779B97F4A7C15ull);
+        for (uint64_t k = size & ~7ull; k < size; k++) h = (h ^ p[k]) * 0x100000001B3ull;
+        return h ? h : 1;
+    }
+    // Larger textures: sample 8 evenly-spaced 64-byte chunks (512 bytes) across the storage.
+    constexpr uint64_t kChunk = 64;
+    constexpr uint64_t kSamples = 8;
+    const uint64_t span = size - kChunk;
+    uint64_t h = size * 0x9E3779B97F4A7C15ull;
+    for (uint64_t i = 0; i < kSamples; i++) {
+        const uint64_t off = ((span * i) / (kSamples - 1)) & ~7ull;
+        h ^= hash_memory(p + off, kChunk) * (0x9E3779B97F4A7C15ull ^ (i * 0xC2B2AE3D27D4EB4Full));
+        h = (h << 13) | (h >> 51);
+    }
+    return h ? h : 1;
+}
+
 using namespace nx::vk;
 
 namespace {
@@ -170,6 +193,11 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     if (gpu_profile_on()) gpu_profile_mark(cb, "texture uploads");
     if (!t.memory || !t.storage_size) return;
     frame_guest_read(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size);  // deferred write-backs first
+    if (!t.stride) {
+        img.upload_sample_hash = tex_sample_hash(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size);
+        img.upload_storage_size = t.storage_size;
+        img.last_memory = t.memory;
+    }
     if (std::getenv("NX_TRACE_UPLOADS") && t.storage_size >= (1u << 20)) {
         const uint8_t* m = reinterpret_cast<const uint8_t*>(t.memory);
         size_t nz = 0;
@@ -185,8 +213,14 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     // NX_NO_UPLOAD_GUARD=1 too; bisecting).
     static const bool narrow = std::getenv("NX_R11G11B10_NARROW") != nullptr;
     bool widen = !narrow && t.format == 0x3f && img.format == VK_FORMAT_R16G16B16A16_SFLOAT && !img.alpha_from_r;
-    std::vector<uint8_t> linear;
-    std::vector<VkBufferImageCopy> copies;
+    static thread_local std::vector<uint8_t> linear;
+    static thread_local std::vector<VkBufferImageCopy> copies;
+    if (linear.capacity() > (16ull << 20)) {
+        std::vector<uint8_t>().swap(linear);
+    } else {
+        linear.clear();
+    }
+    copies.clear();
     uint32_t layers = img.view_type == VK_IMAGE_VIEW_TYPE_3D ? std::max(1u, t.depth) : img.layers;
     if (img.alpha_from_r && t.stride) {  // R8 pitch-linear -> RGBA8 (255, 255, 255, R), level 0
         const uint8_t* src = reinterpret_cast<const uint8_t*>(t.memory);
@@ -247,7 +281,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
             }
             staged = uint64_t(t.stride) * (y1 - y0) * layers;
             u = texture_stage(staged);
-            std::memcpy(u.ptr, reinterpret_cast<const uint8_t*>(t.memory) + y0 * t.stride, staged);
+            plat::fast_memcpy(u.ptr, reinterpret_cast<const uint8_t*>(t.memory) + y0 * t.stride, staged);
             r.bufferRowLength = t.stride / bytes * bw;
         }
         r.bufferOffset = u.offset;
@@ -294,7 +328,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     if (widen)
         widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
     else
-        std::memcpy(u.ptr, linear.data(), linear.size());
+        plat::fast_memcpy(u.ptr, linear.data(), linear.size());
     for (uint32_t k = 0; k < levels.size(); k++) {
         VkBufferImageCopy r{};
         r.bufferOffset = u.offset + levels[k].offset * scale;
@@ -345,7 +379,7 @@ bool upload_region(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint32_t
         for (uint64_t k = 0; k < blocks; k++) out[k] = 0x00FFFFFFu | (uint32_t(src[k]) << 24);
     } else if (host_bytes == bytes) {
         u = texture_stage(blocks * bytes);
-        std::memcpy(u.ptr, src, blocks * bytes);
+        plat::fast_memcpy(u.ptr, src, blocks * bytes);
     } else {
         static std::set<uint32_t> logged;
         if (logged.insert(t.format).second)

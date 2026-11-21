@@ -103,10 +103,12 @@ if (Test-Path $java) {
     if ($LASTEXITCODE) { throw "javac failed" }
     $classes = @((Get-ChildItem "$out\classes" -Recurse -Filter *.class).FullName)
     $env:JAVA_HOME = $jdk
-    # Keep the Windows command line short: the launcher can contain many Java inner classes.
-    $classList = "$out\dex\classes.args"
-    [System.IO.File]::WriteAllLines($classList, $classes, [System.Text.UTF8Encoding]::new($false))
-    & "$bt\d8.bat" --release --min-api 29 --lib $jar --output "$out\dex" "@$classList"
+    # Pass class inputs through a response file: a P5 launcher produces enough classes for cmd.exe's
+    # 8191-character limit to be exceeded when every .class path is expanded on the d8.bat command line.
+    $d8Args = @("--release", "--min-api", "29", "--lib", $jar, "--output", "$out\dex") + $classes
+    $d8ArgsFile = "$out\d8.args"
+    [System.IO.File]::WriteAllLines($d8ArgsFile, $d8Args, [System.Text.UTF8Encoding]::new($false))
+    & "$bt\d8.bat" "@$d8ArgsFile"
     if ($LASTEXITCODE) { throw "d8 failed" }
     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($apk, "$out\dex\classes.dex", "classes.dex", "Optimal") | Out-Null
 }

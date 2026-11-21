@@ -388,7 +388,8 @@ bool init() {
             g_dyn_caps.depth_compare_op = g_dyn_caps.set_depth_compare_op != nullptr;
             g_dyn_caps.stencil_test_enable = g_dyn_caps.set_stencil_test_enable != nullptr;
             g_dyn_caps.stencil_op = g_dyn_caps.set_stencil_op != nullptr;
-            g_dyn_caps.vertex_stride = g_dyn_caps.bind_vertex_buffers2 != nullptr;
+            const char* dyn_vs = std::getenv("NX_DYNAMIC_VERTEX_STRIDE");
+            g_dyn_caps.vertex_stride = (dyn_vs && dyn_vs[0] == '1') && g_dyn_caps.bind_vertex_buffers2 != nullptr;
         }
         if (v13 || use_eds2_ext) {
             g_dyn_caps.set_depth_bias_enable = reinterpret_cast<PFN_vkCmdSetDepthBiasEnable>(
@@ -627,7 +628,6 @@ bool make_swapchain() {
 std::recursive_mutex& gpu_lock() { return g_gpu; }
 VkDevice vk_device() { return g_device; }
 VkPhysicalDevice vk_physical() { return g_physical; }
-std::string vk_device_name() { return g_device_props.deviceName; }
 VkQueue vk_queue() { return g_queue; }
 uint32_t vk_queue_family() { return g_family; }
 bool vk_depth_clip_control() { return g_depth_clip_control; }
@@ -874,6 +874,9 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     g_timing.submit_ns += plat::monotonic_ns() - t_in;
 }
 
+std::atomic<uint64_t> g_replay_frame{0};
+uint64_t replay_frame_id() { return g_replay_frame.load(std::memory_order_relaxed); }
+
 // Headless: the presented texture is only counted, logged and dumped (no swapchain). Nothing is submitted unless a
 // frame dump is due: the empty submit was a Metal command buffer and a fence wait per frame.
 void present_headless(uint64_t texture) {
@@ -886,7 +889,10 @@ void present_headless(uint64_t texture) {
     // NX_PRESENT_TEST_ALL=1 (with NX_PRESENT_TEST): the present pass runs for every frame, and its submit is timed.
     static const bool every = std::getenv("NX_PRESENT_TEST_ALL") != nullptr;
     bool due = frame_dump_due(presents);
-    if (!due && !every) return;
+    if (!due && !every) {
+        g_replay_frame.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     static uint64_t timed_ns = 0, timed = 0;
     const uint64_t t0 = plat::monotonic_ns();
     if (src && src->layout != VK_IMAGE_LAYOUT_UNDEFINED && begin()) {
@@ -908,6 +914,7 @@ void present_headless(uint64_t texture) {
         }
     }
     debug_dump_textures(presents);
+    g_replay_frame.fetch_add(1, std::memory_order_relaxed);
 }
 
 uint64_t picture_latency_ns() { return g_picture_latency.load(std::memory_order_relaxed); }
@@ -947,6 +954,21 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
         hud_crop[0] = hud_up(crop[0]), hud_crop[1] = hud_up(crop[1]);
         hud_crop[2] = hud_up_end(crop[0] + crop[2]) - hud_crop[0], hud_crop[3] = hud_up_end(crop[1] + crop[3]) - hud_crop[1];
         crop = hud_crop;
+    }
+    if (src) {
+        src->is_window_target = true;
+        if (crop && crop[2] > 0 && crop[3] > 0 && crop[0] >= 0 && crop[1] >= 0 &&
+            crop[0] + crop[2] <= int32_t(src->width) && crop[1] + crop[3] <= int32_t(src->height)) {
+            src->present_crop_x = crop[0];
+            src->present_crop_y = crop[1];
+            src->present_crop_w = crop[2];
+            src->present_crop_h = crop[3];
+        } else {
+            src->present_crop_x = 0;
+            src->present_crop_y = 0;
+            src->present_crop_w = int32_t(src->width);
+            src->present_crop_h = int32_t(src->height);
+        }
     }
     GpuImage dst;
     dst.image = g_sc_images[index];
@@ -997,6 +1019,7 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
     if (dump) frame_dump_write(*src, presents);
     if (due) debug_dump_textures(presents);
     debug_hud_dump(presents);  // dump_hud (nvn_debug.cpp): only when a frame was armed
+    g_replay_frame.fetch_add(1, std::memory_order_relaxed);
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
     pi.pWaitSemaphores = &rendered;
@@ -1012,7 +1035,7 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
         pi.pNext = &times;
     }
     r = p_vkQueuePresentKHR(g_queue, &pi);
-    if (g_past_timing && origin_ns && r >= 0) {  // the pictures that reached the screen since the last present
+    if (g_past_timing && origin_ns && r >= 0 && (when.presentID & 7) == 0) {  // the pictures that reached the screen since the last present
         VkPastPresentationTimingGOOGLE past[16];
         uint32_t n = 16;
         if (g_past_timing(g_device, g_swapchain, &n, past) >= 0)

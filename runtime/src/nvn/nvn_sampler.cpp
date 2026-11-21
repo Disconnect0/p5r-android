@@ -1,5 +1,6 @@
 // NVN sampler states as Vulkan samplers (split from nvn_pipeline.cpp).
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
@@ -36,10 +37,36 @@ VkSamplerAddressMode vk_wrap(uint32_t w) {  // NVN: 0 clamp, 1 repeat, 2 mirror 
 
 // ---- samplers -------------------------------------------------------------------------------------------------------
 
+namespace {
+std::atomic<float> g_lod_bias_add{0.0f};
+std::atomic<float> g_aniso_cap{1.0f};
+std::atomic<uint32_t> g_sampler_cfg_gen{0};
+}  // namespace
+
+void sampler_refresh_config() {
+    const char* le = std::getenv("NX_LOD_BIAS");
+    const float lod = std::clamp(le ? float(std::atof(le)) : 0.0f, -2.0f, 4.0f);
+    const char* ae = std::getenv("NX_MAX_ANISO");
+#if defined(__ANDROID__)
+    const float def_aniso = is_mali() ? 1.0f : 2.0f;
+#else
+    const float def_aniso = 16.0f;
+#endif
+    const float aniso = std::clamp(ae ? float(std::atof(ae)) : def_aniso, 1.0f, 16.0f);
+    const uint32_t prev_gen = g_sampler_cfg_gen.load(std::memory_order_relaxed);
+    if (prev_gen == 0 || lod != g_lod_bias_add.load(std::memory_order_relaxed) ||
+        aniso != g_aniso_cap.load(std::memory_order_relaxed)) {
+        g_lod_bias_add.store(lod, std::memory_order_relaxed);
+        g_aniso_cap.store(aniso, std::memory_order_relaxed);
+        g_sampler_cfg_gen.fetch_add(1, std::memory_order_release);
+    }
+}
+
 VkSampler sampler_for(const SamplerInfo& s, bool shadow, bool biased) {
-    // Asked per texture binding of every draw: the key is the state's bytes and the flags (what the std::string key
-    // of before held, compared the same way), hashed; no allocation on a hit.
-    using Key = ByteKey<sizeof(SamplerInfo) + 2>;
+    if (g_sampler_cfg_gen.load(std::memory_order_acquire) == 0) sampler_refresh_config();
+    const uint32_t cfg_gen = g_sampler_cfg_gen.load(std::memory_order_relaxed);
+    // Asked per texture binding of every draw: the key is the state's bytes, flags, and config generation.
+    using Key = ByteKey<sizeof(SamplerInfo) + 6>;
     static std::unordered_map<Key, VkSampler, ByteKeyHash> cache;
     static thread_local Key s_last_key{};
     static thread_local VkSampler s_last_sampler = VK_NULL_HANDLE;
@@ -48,6 +75,7 @@ VkSampler sampler_for(const SamplerInfo& s, bool shadow, bool biased) {
     std::memcpy(key.b, &s, sizeof s);
     key.b[sizeof s] = shadow ? '1' : '0';
     key.b[sizeof s + 1] = biased ? '1' : '0';
+    std::memcpy(key.b + sizeof s + 2, &cfg_gen, 4);
 
     if (s_last_sampler && std::memcmp(s_last_key.b, key.b, sizeof(key.b)) == 0)
         return s_last_sampler;
@@ -71,26 +99,14 @@ VkSampler sampler_for(const SamplerInfo& s, bool shadow, bool biased) {
     // Graphics quality (the P5R launcher's preset): NX_LOD_BIAS=<f> is added to the bias of mipmapped samplers (a
     // smaller mip: less texture bandwidth, softer surfaces) of the 3D draws only (`biased`: the draw tests depth): the
     // 2D ones (menus, HUD) keep their sharpness.
-    static const float lod_bias_add = [] {
-        const char* e = std::getenv("NX_LOD_BIAS");
-        return std::clamp(e ? float(std::atof(e)) : 0.0f, -2.0f, 4.0f);
-    }();
+    const float lod_bias_add = g_lod_bias_add.load(std::memory_order_relaxed);
     ci.mipLodBias = s.lod_bias + (m >= 2 && biased ? lod_bias_add : 0.0f);
     // Games pass lod_min -1000 ("no limit"); Metal wants lodMinClamp >= 0, and a negative one made the glyph
     // sampler return 0 (all text invisible).
     ci.minLod = m <= 1 ? 0.0f : std::max(0.0f, s.lod_min);
     ci.maxLod = m <= 1 ? 0.25f : std::max(ci.minLod, s.lod_max);  // no mipmapping: level 0 only
-    // NX_MAX_ANISO=<n>: anisotropic filtering at most n taps (1: off). P5R asks 16 for its ground and walls, which a
-    // small GPU pays in every pixel of the 3D passes. Clamped to 2 on Android/ARM to prevent Mali memory bus saturation.
-    static const float aniso_cap = [] {
-        const char* e = std::getenv("NX_MAX_ANISO");
-#if defined(__ANDROID__)
-        float def = is_mali() ? 1.0f : 2.0f;
-#else
-        float def = 16.0f;
-#endif
-        return std::clamp(e && std::strcmp(e, "auto") != 0 ? float(std::atof(e)) : def, 1.0f, 16.0f);
-    }();
+    // NX_MAX_ANISO=<n>: anisotropic filtering at most n taps (1: off). Refreshed on relaunch via sampler_refresh_config().
+    const float aniso_cap = g_aniso_cap.load(std::memory_order_relaxed);
     ci.maxAnisotropy = std::min(s.max_anisotropy, aniso_cap);
     ci.anisotropyEnable = ci.maxAnisotropy > 1.0f;
     ci.compareEnable = shadow;

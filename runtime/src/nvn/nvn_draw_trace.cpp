@@ -2,6 +2,7 @@
 // state; NX_TRACE_TARGET, NX_TRACE_FS_HASH, NX_TRACE_COUNT select them; NX_TRACE_VS_BLOCKS and NX_TRACE_GLYPHS add
 // uniform blocks and glyph records. Moved out of nvn_draw.cpp, which calls trace_draw() after every draw.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -305,12 +306,13 @@ namespace nx::nvn::replay {
 
 namespace {
 
+std::atomic<uint32_t> g_hotkey_trace_pending{0};
+
 // On demand while playing: a file named trace_draws in the data folder (optionally holding "<frames>", default 1)
 // logs every draw of the next frames (draw_trace_line), then is deleted. Checked about once a second; for HUD and
 // texture glitches that only show deep in the game (the battle portrait, pixelated during the player's turn).
-bool draws_trace_due() {
+bool draws_trace_due(uint64_t f) {
     static uint64_t next_check = 0, from = 0, until = 0;
-    const uint64_t f = g_frame.load();
     if (plat::kDiagnostics && f >= next_check) {  // not in NX_RELEASE builds
         next_check = f + 30;
         std::string path = plat::data_root() + "/trace_draws";
@@ -327,9 +329,8 @@ bool draws_trace_due() {
 }
 
 // dump_hud (nvn_vk.h): the next frame after the file appears.
-bool hud_dump_due() {
+bool hud_dump_due(uint64_t f) {
     static uint64_t next_check = 0, armed = UINT64_MAX;
-    const uint64_t f = g_frame.load();
     if (plat::kDiagnostics && f >= next_check) {  // not in NX_RELEASE builds
         next_check = f + 30;
         std::string path = plat::data_root() + "/dump_hud";
@@ -359,9 +360,10 @@ void draw_trace_line(const Targets& t, bool indexed, const Cmd& c, const ShaderI
         if (!tx) continue;
         char b[240];
         // sw: the texture's swizzle (NVN 0 zero, 1 one, 2..5 R G B A per channel), then the view's (0: none).
-        std::snprintf(b, sizeof b, " | t%zu %llx %ux%u L%u f%x%s view L%u+%u sw %u%u%u%u/%x min %u mag %u bias %g lod %g..%g an %g", k,
+        std::snprintf(b, sizeof b, " | t%zu %llx %ux%u L%u f%x%s%s%s view L%u+%u sw %u%u%u%u/%x min %u mag %u bias %g lod %g..%g an %g", k,
                       (unsigned long long)texture, tx->width, tx->height, tx->levels, tx->format,
-                      tx->image && tx->image->rendered ? " rt" : "", vw.base_level, vw.levels, tx->swizzle[0],
+                      tx->image && tx->image->rendered ? " rt" : "", tx->stride ? " lin" : "",
+                      tx->image && tx->image->texels ? " tx" : "", vw.base_level, vw.levels, tx->swizzle[0],
                       tx->swizzle[1], tx->swizzle[2], tx->swizzle[3], vw.swizzle, si.min_filter,
                       si.mag_filter, si.lod_bias, si.lod_min, si.lod_max, si.max_anisotropy);
         tex += b;
@@ -441,11 +443,40 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
     trace_cube_draw(t, vs, fs, tex_bindings, handles);
     frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
-    const bool hud_dump = hud_dump_due() && g_hud_target;
-    if (draws_trace_due() || hud_dump) draw_trace_line(t, indexed, c, vs, fs, tex_bindings, handles);
+    const uint64_t cur_f = g_frame.load(std::memory_order_relaxed);
+    const uint64_t cur_rf = replay_frame_id();
+    static bool s_hotkey_armed = false;
+    static uint64_t s_hotkey_min_frame = UINT64_MAX;
+    static uint64_t s_hotkey_frame = UINT64_MAX;
+    if (g_hotkey_trace_pending.load(std::memory_order_relaxed)) {
+        if (g_hotkey_trace_pending.exchange(0, std::memory_order_acq_rel)) {
+            s_hotkey_armed = true;
+            s_hotkey_min_frame = cur_rf + 1;
+        }
+    }
+    // Latch onto the first replay frame >= s_hotkey_min_frame using replay_frame_id(), which only advances at the end
+    // of gpu_present() so all submits of the frame (including Submit 3 HUD/Phone draws) are captured intact.
+    if (s_hotkey_armed && cur_rf >= s_hotkey_min_frame) {
+        s_hotkey_armed = false;
+        s_hotkey_frame = cur_rf;
+        log("debug hotkey: tracing draws & dumping HUD textures on replay frame %llu (guest %llu)",
+            (unsigned long long)s_hotkey_frame, (unsigned long long)cur_f);
+    }
+    const bool hk_active = (cur_rf == s_hotkey_frame);
+    const bool hud_due = hk_active || hud_dump_due(cur_f);
+    bool hud_dump = false;
+    if (hud_due) {
+        if (g_hud_target) {
+            hud_dump = true;
+        } else if (t.color_count && t.colors[0]) {
+            const Texture* t0 = get<Texture>(t.colors[0]);
+            hud_dump = t0 && t0->width >= 1280 && t0->height >= 720 && t0->format == 0x25;
+        }
+    }
+    if (hk_active || draws_trace_due(cur_f) || hud_dump) draw_trace_line(t, indexed, c, vs, fs, tex_bindings, handles);
     if (hud_dump) {
         std::vector<uint64_t> sampled;
-        for (const ResolvedTexture& r : g_textures.resolved)
+        for (const ResolvedTexture& r : g_textures.active_resolved())
             if (r.texture) sampled.push_back(r.texture);
         debug_hud_note(t.color_count ? t.colors[0] : 0, sampled);
     }
@@ -765,3 +796,11 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
 }
 
 }  // namespace nx::nvn::replay
+
+namespace nx::nvn {
+
+void debug_arm_hotkey_trace() {
+    replay::g_hotkey_trace_pending.store(1, std::memory_order_release);
+}
+
+}  // namespace nx::nvn

@@ -69,7 +69,7 @@ uint32_t set_thread_core_mask(uint32_t handle, int32_t ideal, uint64_t mask) {
             }
     if (ideal >= 0) {
         t->core = ideal;
-        if (t.get() == self_thread() && (ideal >= 2 || t->prio >= 44)) {
+        if (t.get() == self_thread() && t->id != 0x50 && !t->is_replay) {
             plat::set_thread_priority(0);
             static const bool worker_little = [] {
                 const char* e = std::getenv("NX_WORKER_LITTLE");

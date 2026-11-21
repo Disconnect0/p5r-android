@@ -138,6 +138,43 @@ void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, b
 
 // ---- one stage ------------------------------------------------------------------------------------------------------
 
+namespace {
+
+void classify_shader_flags(ShaderInfo& info) {
+    info.is_p5r_bloom_blur = false;
+    info.is_known_fullscreen_fs = false;
+    info.is_copy_fs = false;
+    info.is_passthrough_vs = false;
+    if (info.stage == ShaderStage::Vertex) {
+        bool has_buf = false;
+        for (const DescriptorBinding& b : info.refl.bindings) {
+            if (b.nvn.source == NvnSource::UniformBlock || b.nvn.source == NvnSource::StorageBuffer ||
+                b.nvn.source == NvnSource::UniformAsStorage) {
+                has_buf = true;
+                break;
+            }
+        }
+        info.is_passthrough_vs = !has_buf;
+    } else if (info.stage == ShaderStage::Fragment && !info.refl.uses_discard) {
+        const std::string_view h = info.hash;
+        info.is_p5r_bloom_blur = (h == "bcb82de5fe6caa5d");
+        info.is_copy_fs = (h == "a9abaff78b92b1b4");
+        info.is_known_fullscreen_fs =
+            info.is_p5r_bloom_blur ||
+            h == "2064609ec50d2afe" ||  // Hi-Z R32F depth pyramid (6 passes/frame)
+            h == "49bbf01085f5f666" ||  // scene upscale / color grade (1280x720)
+            h == "313616b8dbbca7f9" ||  // tonemap / composite
+            h == "dfe4e3fde76abd47" ||  // FXAA
+            h == "292221e7fcea8c48" ||  // half-res downsample + bright-pass (2 MRT)
+            h == "b82193e4d7196f5f" ||  // quarter-res downsample (2 MRT)
+            h == "17b0f13bc4d11dc7" ||  // 15-tap separable DOF blur
+            h == "97d688181ac63a5e" ||  // bloom combine
+            h == "36a7ca45557070c5";    // wide bloom/lens blur
+    }
+}
+
+}  // namespace
+
 bool make_shader_info(const uint8_t* code, const uint8_t* control, std::vector<uint32_t> spirv,
                       const std::string* resources, ShaderInfo& out, std::string* error) {
     auto fail = [&](std::string why) {
@@ -164,6 +201,8 @@ bool make_shader_info(const uint8_t* code, const uint8_t* control, std::vector<u
         if (!parse_harness_resources(*resources, list)) return fail("unreadable resources record");
         if (!apply_harness(out.refl, list)) return fail("resources record does not match the SPIR-V");
     }
+    classify_shader_flags(out);
+    out.control_ready.store(true, std::memory_order_release);
     return true;
 }
 
@@ -246,7 +285,7 @@ void ensure_resources_loaded(Cache& k) {
 }
 
 void populate_control(ShaderInfo& info, const uint8_t* code, const ShaderControl& c) {
-    if (info.control.valid) return;
+    if (info.control_ready.load(std::memory_order_acquire) || info.control.valid) return;
     if (c.const_size && uint64_t(c.const_offset) + c.const_size <= c.code_size) {
         info.constants.assign(code + c.const_offset, code + c.const_offset + c.const_size);
     }
@@ -254,6 +293,8 @@ void populate_control(ShaderInfo& info, const uint8_t* code, const ShaderControl
         for (int i = 0; i < 3; i++) info.local_size[i] = std::max<uint32_t>(1, c.local_size[i]);
     }
     info.control = c;
+    info.control_ready.store(true, std::memory_order_release);
+    g_shader_epoch.fetch_add(1, std::memory_order_release);
 }
 
 }  // namespace
@@ -312,6 +353,7 @@ const ShaderInfo* shader_for_prewarm(const std::string& hash) {
             return nullptr;
         }
     }
+    classify_shader_flags(*info);
     info->dynamic_uniforms = dynamic_uniform_bindings(info.get());
     info->written_storage = written_storage_bindings(info.get());
     info->masks_known = true;
@@ -390,6 +432,7 @@ const ShaderInfo* shader_for(uint64_t code_host, uint64_t control) {
         log("nvn: shader %s %s: %zu bindings, %zu inputs, %zu outputs, c[1] %u bytes", hash.c_str(),
             stage_name(info->stage), info->refl.bindings.size(), info->refl.inputs.size(), info->refl.outputs.size(),
             uint32_t(info->constants.size()));
+    classify_shader_flags(*info);
     info->dynamic_uniforms = dynamic_uniform_bindings(info.get());
     info->written_storage = written_storage_bindings(info.get());
     info->masks_known = true;

@@ -59,10 +59,15 @@ struct Stats {
 extern State g_state;
 extern Stats g_stats;
 extern uint32_t g_pipeline_state_version;
+extern uint32_t g_dynamic_state_version;
 extern uint32_t g_attrib_state_version;
 extern uint32_t g_tex_state_version;
+extern uint32_t g_targets_version;
+extern uint32_t g_uniform_state_version[kStages];
+extern uint32_t g_storage_state_version[kStages];
 extern bool g_hud_target;  // NX_HUD_1080: this draw's target is a 1920x1080 image of a 1280x720 texture (nvn_vk.h)
 extern bool g_low_3d_target;  // NX_LOW_3D: this draw's target is a 720x405 image of a 960x540 texture (nvn_vk.h)
+extern bool g_is_3d_scene_draw;  // true only for opaque depth-tested & depth-writing 3D scene draws (never 2D/UI)
 
 const uint8_t* guest_bytes(uint64_t gpu);
 uint32_t handle_texture(uint64_t handle, uint32_t* sampler);
@@ -89,6 +94,7 @@ namespace nx::nvn {
 uint64_t submit_start_ns();  // host ns at the start of the submit being replayed
 bool draw_call(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c);
 void dispatch_call(VkCommandBuffer cb, const Cmd& c);
+void note_uub_ticks(uint64_t ticks);
 }  // namespace nx::nvn
 
 namespace nx::nvn::replay {
@@ -101,6 +107,9 @@ enum UploadKind : uint8_t { kUploadOther, kUploadVertex, kUploadIndex, kUploadBl
 extern UploadKind g_upload_kind;  // also: only guest buffers (not kUploadOther) go through the buffer cache
 // nvn_buffer_cache.cpp: copies of guest buffers kept across submits while their bytes stay the same.
 bool cache_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out);
+bool is_buffer_cache_buffer(VkBuffer buf);
+uint64_t cache_evict_epoch();
+void cache_evict_address(const uint8_t* p);
 void cache_begin_submit();  // frees the copies retired submits read
 void cache_log();
 void dedup_reset();                                     // at each submit
@@ -118,6 +127,7 @@ Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_
 bool written_read(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out);
 Upload read_upload(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);  // or dedup
 bool written_overlaps(const uint8_t* p, uint64_t size);
+bool may_overlap_ever_written_pages(const uint8_t* p, uint64_t size);
 // A draw's storage binding over a written region (it may write the copy): counted as written_bind calls are, so a
 // pipelined split (nvn_frames.cpp) does not copy the region back before that draw ran.
 void written_count_bind();
@@ -153,15 +163,25 @@ struct ResolvedTexture {
     bool ready_cached = false;
 };
 struct DrawTextures {
-    TexBindings bindings;  // the set 2 bindings of the program's stages
+    TexBindings bindings;  // the set 2 bindings of the program's stages (fallback storage when unslotted)
     std::vector<uint64_t> handles;
     std::vector<ResolvedTexture> resolved;
+    const TexBindings* bind_ptr = &bindings;
+    std::vector<uint64_t>* hand_ptr = &handles;
+    std::vector<ResolvedTexture>* res_ptr = &resolved;
     bool set2_unchanged = false;
+    bool same_shader_as_last = false;
     uint64_t serial = 0;  // bumped whenever any binding of the draw differs from the one before
+    const TexBindings& active_bindings() const { return *bind_ptr; }
+    const std::vector<uint64_t>& active_handles() const { return *hand_ptr; }
+    std::vector<uint64_t>& active_handles() { return *hand_ptr; }
+    const std::vector<ResolvedTexture>& active_resolved() const { return *res_ptr; }
+    std::vector<ResolvedTexture>& active_resolved() { return *res_ptr; }
 };
 extern DrawTextures g_textures;  // filled by gather_textures, read by build_sets and the traces of the same draw
 enum : uint32_t { kNeedBreak = 1, kSampledPending = 2 };
 uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders);
+void touch_hidden_textures(const std::vector<const ShaderInfo*>& shaders);
 void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
 // vkUpdateDescriptorSets for what build_sets made, then the sets bound at `point`.
 void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayout& layout);
@@ -170,6 +190,7 @@ Upload zero_stream();  // 64 zero bytes for vertex binding 15
 bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const Cmd& c, DrawInputs& in);
 std::vector<WriteBack>& separate_write_backs();  // NX_COMPUTE_SEPARATE=1: a write-back per binding
 void sets_begin_submit();
+void sets_abort_draw();
 void sets_invalidate_bound();
 void sets_invalidate_range(const uint8_t* p, uint64_t size);
 void sets_log();

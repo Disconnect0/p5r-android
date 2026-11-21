@@ -54,6 +54,39 @@ using It = Regions::iterator;
 Regions g_regions;
 const uint8_t* g_regions_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
 const uint8_t* g_regions_hi = nullptr;
+uint64_t g_regions_page_bits[64] = {};
+uint64_t g_ever_written_page_bits[64] = {};
+
+inline void mark_written_pages(const uint8_t* p, uint64_t size) {
+    if (!p || !size) return;
+    const uintptr_t start_page = reinterpret_cast<uintptr_t>(p) >> 16;
+    const uintptr_t end_page = (reinterpret_cast<uintptr_t>(p) + size - 1) >> 16;
+    if (end_page - start_page >= 4096) {
+        std::memset(g_regions_page_bits, 0xFF, sizeof g_regions_page_bits);
+        std::memset(g_ever_written_page_bits, 0xFF, sizeof g_ever_written_page_bits);
+        return;
+    }
+    for (uintptr_t pg = start_page; pg <= end_page; pg++) {
+        const uint32_t bit = uint32_t((pg ^ (pg >> 12)) & 4095);
+        g_regions_page_bits[bit >> 6] |= 1ull << (bit & 63);
+        g_ever_written_page_bits[bit >> 6] |= 1ull << (bit & 63);
+    }
+}
+
+inline bool may_overlap_written_pages(const uint8_t* p, uint64_t size) {
+    const uintptr_t start_page = reinterpret_cast<uintptr_t>(p) >> 16;
+    const uintptr_t end_page = (reinterpret_cast<uintptr_t>(p) + size - 1) >> 16;
+    if (start_page == end_page) {
+        const uint32_t bit = uint32_t((start_page ^ (start_page >> 12)) & 4095);
+        return (g_regions_page_bits[bit >> 6] >> (bit & 63)) & 1;
+    }
+    if (end_page - start_page > 16) return true;
+    for (uintptr_t pg = start_page; pg <= end_page; pg++) {
+        const uint32_t bit = uint32_t((pg ^ (pg >> 12)) & 4095);
+        if ((g_regions_page_bits[bit >> 6] >> (bit & 63)) & 1) return true;
+    }
+    return false;
+}
 std::vector<std::shared_ptr<std::vector<uint8_t>>> g_before_pool;
 bool g_read = false;  // a copy was bound for reading since the last write_after_read
 uint64_t g_binds = 0;  // written_bind calls, ever (nvn_frames.cpp: did a dispatch write storage after the split)
@@ -90,7 +123,9 @@ std::shared_ptr<std::vector<uint8_t>> alloc_before(uint64_t n) {
 // The regions overlapping [p, p + size), in address order.
 std::vector<It> overlapping(const uint8_t* p, uint64_t size) {
     std::vector<It> v;
-    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo) return v;
+    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo ||
+        !may_overlap_written_pages(p, size))
+        return v;
     It it = g_regions.upper_bound(p);
     if (it != g_regions.begin() && std::prev(it)->first + std::prev(it)->second.size > p) v.push_back(std::prev(it));
     for (; it != g_regions.end() && it->first < p + size; ++it) v.push_back(it);
@@ -233,14 +268,34 @@ Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_
         g_merged++;
     }
     dedup_invalidate(lo, n);  // copies of these bytes made earlier in the submit are not what later work reads
+    cache_evict_address(lo);
+    if (p != lo) cache_evict_address(p);
     g_regions_lo = std::min(g_regions_lo, lo);
     g_regions_hi = std::max(g_regions_hi, lo + n);
+    mark_written_pages(lo, n);
     It it = g_regions.emplace(lo, r).first;
     return at(it, off);
 }
 
+bool may_overlap_ever_written_pages(const uint8_t* p, uint64_t size) {
+    if (!p || !size) return false;
+    const uintptr_t start_page = reinterpret_cast<uintptr_t>(p) >> 16;
+    const uintptr_t end_page = (reinterpret_cast<uintptr_t>(p) + size - 1) >> 16;
+    if (start_page == end_page) {
+        const uint32_t bit = uint32_t((start_page ^ (start_page >> 12)) & 4095);
+        return (g_ever_written_page_bits[bit >> 6] >> (bit & 63)) & 1;
+    }
+    if (end_page - start_page > 16) return true;
+    for (uintptr_t pg = start_page; pg <= end_page; pg++) {
+        const uint32_t bit = uint32_t((pg ^ (pg >> 12)) & 4095);
+        if ((g_ever_written_page_bits[bit >> 6] >> (bit & 63)) & 1) return true;
+    }
+    return false;
+}
+
 bool written_read(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out) {
-    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo || written_separate())
+    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo || written_separate() ||
+        !may_overlap_written_pages(p, size))
         return false;
     // Fast path for single-region containment without heap-allocating std::vector<It>:
     It upper = g_regions.upper_bound(p);
@@ -286,7 +341,9 @@ Upload read_upload(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t
 }
 
 bool written_overlaps(const uint8_t* p, uint64_t size) {
-    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo) return false;
+    if (!p || !size || g_regions.empty() || p >= g_regions_hi || p + size <= g_regions_lo ||
+        !may_overlap_written_pages(p, size))
+        return false;
     It it = g_regions.upper_bound(p);
     if (it != g_regions.begin() && std::prev(it)->first + std::prev(it)->second.size > p) return true;
     return it != g_regions.end() && it->first < p + size;
@@ -305,20 +362,81 @@ struct StreamCacheEntry {
     const uint8_t* host_p = nullptr;
     uint64_t size = 0;
     uint64_t gen = 0;
+    uint64_t frame_id = 0;
+    uint64_t evict_epoch = 0;
+    bool is_cached = false;
     Upload upload{};
 };
 static StreamCacheEntry s_stream_cache[16];
+static uint32_t s_stream_valid_mask = 0;
+static uint64_t s_stream_valid_gen = 0;
+static uint64_t s_stream_frame_id = 0;
+static uint64_t s_stream_evict_epoch = 0;
+static const uint8_t* s_stream_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
+static const uint8_t* s_stream_hi = nullptr;
+
+constexpr size_t kVertexCacheSlots = 512;
+static StreamCacheEntry s_vertex_cache[kVertexCacheSlots];
+static uint64_t s_vertex_valid_words[kVertexCacheSlots / 64] = {};
+static uint32_t s_vertex_group_mask = 0;
+static uint64_t s_vertex_page_bloom = 0;
+
+inline uint64_t vertex_bloom_bit(const uint8_t* p) {
+    const uintptr_t pg = reinterpret_cast<uintptr_t>(p) >> 16;
+    return 1ull << ((pg ^ (pg >> 6)) & 63);
+}
 
 void stream_cache_invalidate(const uint8_t* p, uint64_t size) {
-    if (!p || !size) return;
+    if (!p || !size || (!s_stream_valid_mask && !s_vertex_group_mask) || p >= s_stream_hi || p + size <= s_stream_lo) return;
+    const uint64_t cur_frame_id = g_frame.load(std::memory_order_relaxed) + 1;
+    const uint64_t cur_evict_epoch = cache_evict_epoch();
+    if (s_stream_valid_gen != dedup_generation() &&
+        (s_stream_frame_id != cur_frame_id || s_stream_evict_epoch != cur_evict_epoch)) {
+        s_stream_valid_mask = 0;
+        if (s_vertex_group_mask) {
+            std::memset(s_vertex_valid_words, 0, sizeof s_vertex_valid_words);
+            s_vertex_group_mask = 0;
+            s_vertex_page_bloom = 0;
+        }
+        s_stream_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
+        s_stream_hi = nullptr;
+        return;
+    }
     const uint8_t* p_end = p + size;
-    for (uint32_t s = 0; s < 15; s++) {
+    uint32_t m = s_stream_valid_mask;
+    while (m) {
+        const uint32_t s = uint32_t(__builtin_ctz(m));
+        m &= m - 1;
         if (s_stream_cache[s].host_p &&
             p < s_stream_cache[s].host_p + s_stream_cache[s].size &&
             s_stream_cache[s].host_p < p_end) {
             s_stream_cache[s].address = 0;
             s_stream_cache[s].host_p = nullptr;
+            s_stream_valid_mask &= ~(1u << s);
         }
+    }
+    if (!s_vertex_group_mask) return;
+    if ((reinterpret_cast<uintptr_t>(p) >> 16) == ((reinterpret_cast<uintptr_t>(p_end) - 1) >> 16) &&
+        !(s_vertex_page_bloom & vertex_bloom_bit(p)))
+        return;
+    uint32_t gm = s_vertex_group_mask;
+    while (gm) {
+        const size_t w = uint32_t(__builtin_ctz(gm));
+        gm &= gm - 1;
+        uint64_t vm = s_vertex_valid_words[w];
+        while (vm) {
+            const uint32_t bit = uint32_t(__builtin_ctzll(vm));
+            vm &= vm - 1;
+            const size_t k = (w << 6) | bit;
+            if (s_vertex_cache[k].host_p &&
+                p < s_vertex_cache[k].host_p + s_vertex_cache[k].size &&
+                s_vertex_cache[k].host_p < p_end) {
+                s_vertex_cache[k].address = 0;
+                s_vertex_cache[k].host_p = nullptr;
+                s_vertex_valid_words[w] &= ~(1ull << bit);
+            }
+        }
+        if (!s_vertex_valid_words[w]) s_vertex_group_mask &= ~(1u << w);
     }
 }
 
@@ -342,22 +460,83 @@ bool draw_inputs(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const C
     }
 
     const uint64_t cur_gen = dedup_generation();
+    const uint64_t cur_frame_id = g_frame.load(std::memory_order_relaxed) + 1;
+    const uint64_t cur_evict_epoch = cache_evict_epoch();
+    if (s_stream_frame_id != cur_frame_id || s_stream_evict_epoch != cur_evict_epoch) {
+        s_stream_frame_id = cur_frame_id;
+        s_stream_evict_epoch = cur_evict_epoch;
+        s_stream_valid_gen = cur_gen;
+        s_stream_valid_mask = 0;
+        if (s_vertex_group_mask) {
+            std::memset(s_vertex_valid_words, 0, sizeof s_vertex_valid_words);
+            s_vertex_group_mask = 0;
+            s_vertex_page_bloom = 0;
+        }
+        s_stream_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
+        s_stream_hi = nullptr;
+    } else if (s_stream_valid_gen != cur_gen) {
+        s_stream_valid_gen = cur_gen;
+    }
+
+    auto entry_valid = [&](const StreamCacheEntry& e) -> bool {
+        return e.gen == cur_gen ||
+               (e.is_cached && e.frame_id == cur_frame_id && e.evict_epoch == cur_evict_epoch);
+    };
 
     for (uint32_t m = in.used; m; m &= m - 1) {
         const uint32_t s = uint32_t(__builtin_ctz(m));
         const Range& r = g_state.vertex_buffers[s];
         if (r.address && r.address == s_stream_cache[s].address &&
             r.size == s_stream_cache[s].size &&
-            cur_gen == s_stream_cache[s].gen) {
+            entry_valid(s_stream_cache[s])) {
             in.vertex[s] = s_stream_cache[s].upload;
             continue;
+        }
+        const size_t vc_base = ((r.address >> 4) ^ (r.address >> 12)) & (kVertexCacheSlots - 1);
+        if (r.address) {
+            bool hit = false;
+            for (size_t step = 0; step < 4; step++) {
+                const StreamCacheEntry& vc = s_vertex_cache[(vc_base + step) & (kVertexCacheSlots - 1)];
+                if (vc.address == r.address && vc.size == r.size && entry_valid(vc)) {
+                    in.vertex[s] = vc.upload;
+                    s_stream_cache[s] = vc;
+                    if (vc.host_p) s_stream_valid_mask |= (1u << s);
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) continue;
         }
         const uint8_t* p = r.address ? guest_bytes(r.address) : nullptr;
         uint64_t size = p ? std::min<uint64_t>(r.size, 64ull << 20) : 0;
         g_upload_kind = kUploadVertex;
         in.vertex[s] = read_upload(cb, p, size, std::max<uint64_t>((size + 15) & ~15ull, 16), 16);
         g_upload_kind = kUploadOther;
-        s_stream_cache[s] = {r.address, p, r.size, cur_gen, in.vertex[s]};
+        const bool cached_buf = is_buffer_cache_buffer(in.vertex[s].buffer);
+        s_stream_cache[s] = {r.address, p, r.size, cur_gen, cur_frame_id, cur_evict_epoch, cached_buf, in.vertex[s]};
+        if (p) {
+            s_stream_valid_mask |= (1u << s);
+            if (p < s_stream_lo) s_stream_lo = p;
+            if (p + r.size > s_stream_hi) s_stream_hi = p + r.size;
+            if (r.address) {
+                size_t put_idx = vc_base;
+                for (size_t step = 0; step < 4; step++) {
+                    size_t cand = (vc_base + step) & (kVertexCacheSlots - 1);
+                    if (!entry_valid(s_vertex_cache[cand]) || s_vertex_cache[cand].address == 0) {
+                        put_idx = cand;
+                        break;
+                    }
+                }
+                s_vertex_cache[put_idx] = s_stream_cache[s];
+                const size_t w = put_idx >> 6;
+                s_vertex_valid_words[w] |= 1ull << (put_idx & 63);
+                s_vertex_group_mask |= 1u << w;
+                if ((reinterpret_cast<uintptr_t>(p) >> 16) == ((reinterpret_cast<uintptr_t>(p + r.size) - 1) >> 16))
+                    s_vertex_page_bloom |= vertex_bloom_bit(p);
+                else
+                    s_vertex_page_bloom = ~0ull;
+            }
+        }
     }
     if (!indexed) return true;
     uint32_t count = uint32_t(c.i[0]);
@@ -433,8 +612,9 @@ void written_cpu_write(const uint8_t* p, uint64_t size) {
     // UpdateUniformBuffer / ReportCounter into a range a dispatch of this submit writes: the copy misses the bytes
     // (they reach guest memory at replay time) and the write-back replaces them. Not handled: logged.
     static int logs = 0;
-    if (logs < 16 && !exp_no_write_backs() && written_overlaps(p, size) && logs++ < 16)
-        log("nvn: guest write into a compute-written range (%llu bytes): lost at write-back", (unsigned long long)size);
+    if (__builtin_expect(logs < 16 && !g_regions.empty(), 0))
+        if (!exp_no_write_backs() && written_overlaps(p, size) && logs++ < 16)
+            log("nvn: guest write into a compute-written range (%llu bytes): lost at write-back", (unsigned long long)size);
 }
 
 std::vector<WriteBack> written_take() {
@@ -457,6 +637,7 @@ void written_reset() {
     g_read = false;
     g_regions_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
     g_regions_hi = nullptr;
+    std::memset(g_regions_page_bits, 0, sizeof g_regions_page_bits);
 }
 
 void written_log() {

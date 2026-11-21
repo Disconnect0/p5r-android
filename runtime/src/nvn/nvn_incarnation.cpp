@@ -26,6 +26,7 @@ namespace nx::nvn {
 namespace {
 
 std::atomic<uint64_t> g_epoch{1};  // bumped under objects_lock (alone) by each recorded change
+std::atomic<bool> g_has_incarnations{false};
 // guest -> (epoch of the change, object it retired; null: there was none), in epoch order. Under objects_lock.
 std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, Object*>>> g_retired;
 std::atomic<uint64_t> g_resolved_old{0};  // replay lookups answered with a retired incarnation
@@ -50,6 +51,7 @@ void note_replaced(uint64_t guest) {
     auto it = objects().find(guest);
     Object* current = it == objects().end() ? nullptr : it->second.get();
     g_retired[guest].push_back({g_epoch.fetch_add(1, std::memory_order_acq_rel) + 1, current});
+    g_has_incarnations.store(true, std::memory_order_release);
 }
 
 Object* find_object(uint64_t guest, uint64_t mark) {
@@ -82,6 +84,7 @@ std::atomic<uint64_t> g_pool_old{0};
 void note_pool_change(uint64_t pool, uint32_t id, const PoolEntry& before) {
     if (texture_race_old()) return;
     g_pool_changes[{pool, id}].push_back({g_epoch.fetch_add(1, std::memory_order_acq_rel) + 1, before});
+    g_has_incarnations.store(true, std::memory_order_release);
 }
 
 bool pool_entry_at(uint64_t pool, uint32_t id, uint64_t mark, PoolEntry& out) {
@@ -106,6 +109,7 @@ std::map<std::pair<uint64_t, uint32_t>, std::vector<std::pair<uint64_t, SamplerS
 void note_sampler_change(uint64_t pool, uint32_t id, const SamplerSlot& before) {
     if (texture_race_old()) return;
     g_sampler_changes[{pool, id}].push_back({g_epoch.fetch_add(1, std::memory_order_acq_rel) + 1, before});
+    g_has_incarnations.store(true, std::memory_order_release);
 }
 
 bool sampler_entry_at(uint64_t pool, uint32_t id, uint64_t mark, SamplerSlot& out) {
@@ -117,6 +121,8 @@ bool sampler_entry_at(uint64_t pool, uint32_t id, uint64_t mark, SamplerSlot& ou
     return false;
 }
 
+bool has_incarnations() { return g_has_incarnations.load(std::memory_order_acquire); }
+
 void purge_incarnations(uint64_t upto) {
     auto trim = [upto](auto& map) {
         for (auto it = map.begin(); it != map.end();) {
@@ -126,6 +132,8 @@ void purge_incarnations(uint64_t upto) {
         }
     };
     trim(g_retired), trim(g_pool_changes), trim(g_sampler_changes);
+    g_has_incarnations.store(!g_retired.empty() || !g_pool_changes.empty() || !g_sampler_changes.empty(),
+                             std::memory_order_release);
 }
 
 namespace {
@@ -156,8 +164,14 @@ ReplayScope::ReplayScope(uint64_t lists_epoch) {
     g_floor = mark;
     drain_objects();
     t_replay_mark = mark;
-    static std::atomic<uint64_t> serial{0};
-    t_replay_serial = ++serial;
+    static uint64_t s_last_mark = 0, s_last_obj_gen = 0, s_serial = 0;
+    const uint64_t obj_gen = objects_lock().generation.load(std::memory_order_acquire);
+    if (mark != s_last_mark || obj_gen != s_last_obj_gen || s_serial == 0) {
+        s_last_mark = mark;
+        s_last_obj_gen = obj_gen;
+        ++s_serial;
+    }
+    t_replay_serial = s_serial;
 }
 
 ReplayScope::~ReplayScope() { t_replay_mark = 0, t_replay_serial = 0; }

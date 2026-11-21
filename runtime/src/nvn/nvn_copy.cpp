@@ -14,6 +14,7 @@
 
 #include "nvn_draw_state.h"
 #include "nvn_pipeline.h"
+#include "nvn_ultrawide.h"
 #include "nvn_vk.h"
 
 namespace nx::nvn {
@@ -83,12 +84,14 @@ void ClearTexture(CPU& c) {
 
 // The image of a texture a copy or clear is about to fill. One never uploaded is cleared, not untiled from its guest
 // memory first: the GPU writes such textures, so that memory holds nothing of them here.
-GpuImage* fill_target(VkCommandBuffer cb, uint64_t texture) {
+GpuImage* fill_target(VkCommandBuffer cb, uint64_t texture, bool skip_clear = false) {
     Texture* t = get<Texture>(texture);
     GpuImage* img = t ? image_of(texture) : nullptr;
     if (!img) return nullptr;
-    if (!img->uploaded && !img->rendered && !t->dirty && !t->has_writes.load(std::memory_order_acquire))
-        clear_image(cb, *img), img->uploaded = true;
+    if (!img->uploaded && !img->rendered && !t->dirty && !t->has_writes.load(std::memory_order_acquire)) {
+        if (!skip_clear) clear_image(cb, *img);
+        img->uploaded = true;
+    }
     return ensure_contents(cb, texture);
 }
 
@@ -130,6 +133,11 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     GpuImage* src = ensure_contents(cb, c.a[0]);
     GpuImage* dst = ensure_contents(cb, c.a[1]);
     if (!src || !dst) return;
+    uint32_t sl = std::min(info.src_view.base_level, src->levels - 1), dl = std::min(info.dst_view.base_level, dst->levels - 1);
+    // NX_ULTRAWIDE: guest queries nvnTextureGetWidth() and receives guest_width (16:9), so widen copy rects
+    // for widened targets before HUD/low_3d scaling (matching nvn_draw.cpp viewports/scissors and nvn_clears.cpp).
+    if (src->uw) uw_span(info.src[0], info.src[3], (src->hud || src->low_3d) ? UINT32_MAX : std::max(1u, src->width >> sl));
+    if (dst->uw) uw_span(info.dst[0], info.dst[3], (dst->hud || dst->low_3d) ? UINT32_MAX : std::max(1u, dst->width >> dl));
     // NX_HUD_1080: a rectangle on a 1920x1080 image of a 1280x720 texture is taken 3/2 (the frame's copy into the
     // window texture: both scaled, a plain copy; one side only: a blit that scales).
     auto hud_rect = [](int32_t* r) {
@@ -139,10 +147,10 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     if (src->hud) hud_rect(info.src);
     if (dst->hud) hud_rect(info.dst);
     auto low_3d_rect = [](int32_t* r) {
-        int32_t x0 = (r[0] * 3) / 4;
-        int32_t y0 = (r[1] * 3) / 4;
-        int32_t x1 = ((r[0] + r[3]) * 3 + 2) / 4;
-        int32_t y1 = ((r[1] + r[4]) * 3 + 2) / 4;
+        int32_t x0 = low_3d_down(r[0]);
+        int32_t y0 = low_3d_down(r[1]);
+        int32_t x1 = low_3d_down_end(r[0] + r[3]);
+        int32_t y1 = low_3d_down_end(r[1] + r[4]);
         r[0] = x0;
         r[1] = y0;
         r[3] = std::max(1, x1 - x0);
@@ -153,7 +161,6 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     bool same = src == dst;
     static const bool no_same = std::getenv("NX_COPY_NO_SAME_IMAGE") != nullptr;  // bisecting: the old way
     if (same && no_same) return;
-    uint32_t sl = std::min(info.src_view.base_level, src->levels - 1), dl = std::min(info.dst_view.base_level, dst->levels - 1);
     bool s3d = src->view_type == VK_IMAGE_VIEW_TYPE_3D, d3d = dst->view_type == VK_IMAGE_VIEW_TYPE_3D;
     auto sub = [](const GpuImage& img, uint32_t level, int32_t z, int32_t depth, uint32_t view_layer, bool is3d) {
         VkImageAspectFlags aspect = img.aspect;
@@ -231,7 +238,10 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     static uint64_t copies = 0, failed = 0;
     Texture* t = get<Texture>(c.a[1]);
     const uint8_t* src = replay::guest_bytes(c.a[0]);
-    GpuImage* img = t && src ? fill_target(cb, c.a[1]) : nullptr;
+    const bool whole_single = t && t->levels <= 1 && t->depth <= 1 && info.dst_view.base_level == 0 &&
+                              info.dst_view.min_layer == 0 && info.dst[0] <= 0 && info.dst[1] <= 0 &&
+                              info.dst[3] >= int32_t(t->width) && info.dst[4] >= int32_t(t->height);
+    GpuImage* img = t && src ? fill_target(cb, c.a[1], whole_single) : nullptr;
     if (img && (img->hud || img->low_3d || img->shadow)) img = nullptr;  // unscaled texels for downscaled/upscaled targets
     if (!img || !upload_region(cb, *t, *img, info.dst_view.base_level, info.dst_view.min_layer, info.dst, src)) {
         if (++failed <= 10)
@@ -248,6 +258,7 @@ void replay_buffer_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
 }
 
 void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
+    if ((c.mask & 15) != 15) return;
     if (c.blob >= list.blobs.size() || list.blob_size(c.blob) != sizeof(ClearTextureInfo)) return;
     ClearTextureInfo info;
     std::memcpy(&info, list.blob_ptr(c.blob, sizeof(ClearTextureInfo)), sizeof info);
@@ -256,59 +267,27 @@ void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list)
     if (!img) return;
     uint32_t level = std::min(info.view.base_level, img->levels - 1);
     uint32_t lw = std::max(1u, img->width >> level), lh = std::max(1u, img->height >> level);
+    if (img->uw) uw_span(info.region[0], info.region[3], (img->hud || img->low_3d) ? UINT32_MAX : lw);
     if (img->hud) {  // NX_HUD_1080: the guest rectangle, 3/2
         const int32_t x1 = hud_up_end(info.region[0] + info.region[3]), y1 = hud_up_end(info.region[1] + info.region[4]);
         info.region[0] = hud_up(info.region[0]), info.region[1] = hud_up(info.region[1]);
         info.region[3] = x1 - info.region[0], info.region[4] = y1 - info.region[1];
     }
-    if ((c.mask & 15) == 0) return;
     const int32_t* r = info.region;
     bool whole = r[0] <= 0 && r[1] <= 0 && r[0] + r[3] >= int32_t(lw) && r[1] + r[4] >= int32_t(lh);
     static int logged = 0;
-    if (img->aspect != VK_IMAGE_ASPECT_COLOR_BIT || compressed(img->format)) {
+    if (img->aspect != VK_IMAGE_ASPECT_COLOR_BIT || compressed(img->format) || !whole || (c.mask & 15) != 15) {
         if (logged++ < 10)
-            log("nvn: texture clear not replayed (unsupported format/aspect): %llx %ux%u f%#x level %u, rect %d,%d %dx%d, mask %x",
+            log("nvn: texture clear not replayed (partial or depth): %llx %ux%u f%#x level %u, rect %d,%d %dx%d, mask %x",
                 (unsigned long long)c.a[0], img->width, img->height, t->format, level, r[0], r[1], r[3], r[4], c.mask);
         return;
     }
-    if (whole && (c.mask & 15) == 15) {
-        bool is3d = img->view_type == VK_IMAGE_VIEW_TYPE_3D;
-        uint32_t layer = is3d ? 0 : std::min(uint32_t(std::max(r[2], 0)) + info.view.min_layer, img->layers - 1);
-        VkImageSubresourceRange range{img->aspect, level, 1, layer, is3d ? 1u : std::clamp<uint32_t>(uint32_t(r[5]), 1, img->layers - layer)};
-        VkClearColorValue v{{c.f[0], c.f[1], c.f[2], c.f[3]}};
-        transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        p_vkCmdClearColorImage(cb, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &range);
-        img->texels = true;
-        sampled_layout(cb, *img);
-        return;
-    }
-    // Partial channel mask (e.g. mask 8: alpha only) or scissored sub-rectangle clear:
-    // Replay through a lightweight render pass with a masked fullscreen triangle.
-    draw_end_rendering(cb, 4);
-    Targets targets{};
-    targets.color_count = 1;
-    targets.colors[0] = c.a[0];
-    targets.views.level[0] = uint8_t(level);
-    targets.views.layer[0] = uint8_t(info.view.min_layer);
-    targets.views.format[0] = uint8_t(info.view.format);
-
-    int32_t rx = std::clamp<int32_t>(r[0], 0, int32_t(lw));
-    int32_t ry = std::clamp<int32_t>(r[1], 0, int32_t(lh));
-    int32_t rw = r[3] > 0 ? std::clamp<int32_t>(r[3], 0, int32_t(lw) - rx) : int32_t(lw);
-    int32_t rh = r[4] > 0 ? std::clamp<int32_t>(r[4], 0, int32_t(lh) - ry) : int32_t(lh);
-    if (rw <= 0 || rh <= 0) return;
-    VkRect2D rect{{rx, ry}, {uint32_t(rw), uint32_t(rh)}};
-
-    pass_begin(cb, targets);
-    if (mask_clear(cb, targets, 0, c.mask & 15, c.f, rect)) {
-        pass_mark_written(1);
-    } else {
-        static int mask_logged = 0;
-        if (mask_logged++ < 10)
-            log("nvn: masked texture clear failed: %llx %ux%u f%#x level %u, rect %d,%d %dx%d, mask %x",
-                (unsigned long long)c.a[0], img->width, img->height, t->format, level, r[0], r[1], r[3], r[4], c.mask);
-    }
-    draw_end_rendering(cb, 4);
+    bool is3d = img->view_type == VK_IMAGE_VIEW_TYPE_3D;
+    uint32_t layer = is3d ? 0 : std::min(uint32_t(std::max(r[2], 0)) + info.view.min_layer, img->layers - 1);
+    VkImageSubresourceRange range{img->aspect, level, 1, layer, is3d ? 1u : std::clamp<uint32_t>(uint32_t(r[5]), 1, img->layers - layer)};
+    VkClearColorValue v{{c.f[0], c.f[1], c.f[2], c.f[3]}};
+    transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    p_vkCmdClearColorImage(cb, img->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &range);
     img->texels = true;
     sampled_layout(cb, *img);
 }

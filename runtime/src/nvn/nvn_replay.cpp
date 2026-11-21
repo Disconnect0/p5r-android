@@ -80,6 +80,7 @@ void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth
                 st.views = {};
                 if (c.blob < list.blobs.size() && list.blob_size(c.blob) == sizeof(TargetViews))
                     std::memcpy(&st.views, list.blob_ptr(c.blob, sizeof(TargetViews)), sizeof st.views);
+                replay::g_targets_version++;
                 break;
             }
             case Cmd::ClearColor:
@@ -112,18 +113,25 @@ void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth
                 if (gpu_profile_on()) gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
                 break;
             case Cmd::CopyBufferToTexture:
-            case Cmd::ClearTexture:
                 if (clears_keep_pending()) {
                     pass_end_only(cb, 5);
                     clears_flush_reason(5);
-                    clears_flush_image(cb, c.op == Cmd::CopyBufferToTexture ? c.a[1] : c.a[0]);
+                    clears_flush_image(cb, c.a[1]);
                 } else {
                     draw_end_rendering(cb, 5);
                 }
-                if (c.op == Cmd::CopyBufferToTexture)
-                    replay_buffer_copy(cb, c, list);
-                else
-                    replay_clear_texture(cb, c, list);
+                replay_buffer_copy(cb, c, list);
+                break;
+            case Cmd::ClearTexture:
+                if ((c.mask & 15) != 15) break;
+                if (clears_keep_pending()) {
+                    pass_end_only(cb, 5);
+                    clears_flush_reason(5);
+                    clears_flush_image(cb, c.a[0]);
+                } else {
+                    draw_end_rendering(cb, 5);
+                }
+                replay_clear_texture(cb, c, list);
                 break;
             default:
                 draw_command(cb, c, list, st);

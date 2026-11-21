@@ -85,9 +85,58 @@ struct CommandBuffer : Object {
     uint64_t command_base = 0, control_base = 0;  // usage before this recording
     uint64_t command_memory = 0;                  // the memory added last: its GPU address (see AddCommandMemory)
     uint64_t command_pool = 0;                    // its NVNmemoryPool*
+    size_t logical_cmds = 0;
     uint32_t last_stencil_ref = ~0u;
     uint32_t last_stencil_mask = ~0u;
     uint32_t last_stencil_value_mask = ~0u;
+    bool has_color_state = false, has_channel_mask = false, has_depth_stencil = false, has_polygon = false;
+    bool has_multisample = false, has_blend[8] = {};
+    ColorStateInfo last_color{};
+    ChannelMaskInfo last_channel_mask{};
+    DepthStencilInfo last_depth_stencil{};
+    PolygonInfo last_polygon{};
+    BlendTarget last_blend[8]{};
+    uint32_t last_multisample = 0;
+    uint32_t last_attrib_n = ~0u, last_stream_n = ~0u;
+    VertexAttrib last_attribs[32]{};
+    VertexStream last_streams[32]{};
+    uint64_t last_stage_program[6] = {~0ull, ~0ull, ~0ull, ~0ull, ~0ull, ~0ull};
+    uint32_t has_stage_program_mask = 0;
+    bool has_viewport = false, has_scissor = false, has_restart = false;
+    int32_t last_viewport[4] = {};
+    int32_t last_scissor[4] = {};
+    uint32_t last_restart = 0;
+    uint64_t last_restart_idx = 0;
+    uint64_t last_tex_pool = ~0ull, last_smp_pool = ~0ull;
+    uint32_t has_ubo_mask[6] = {};
+    uint64_t last_ubo_addr[6][18] = {};
+    uint64_t last_ubo_size[6][18] = {};
+    uint32_t has_ssbo_mask[6] = {};
+    uint64_t last_ssbo_addr[6][16] = {};
+    uint64_t last_ssbo_size[6][16] = {};
+    uint32_t has_tex_mask[6] = {};
+    uint64_t last_tex_handle[6][32] = {};
+    uint32_t has_vb_mask = 0;
+    uint64_t last_vb_addr[16] = {};
+    uint64_t last_vb_size[16] = {};
+
+    void reset_tracked_state() {
+        last_stencil_ref = ~0u;
+        last_stencil_mask = ~0u;
+        last_stencil_value_mask = ~0u;
+        has_color_state = has_channel_mask = has_depth_stencil = has_polygon = has_multisample = false;
+        std::memset(has_blend, 0, sizeof has_blend);
+        last_attrib_n = ~0u;
+        last_stream_n = ~0u;
+        for (int s = 0; s < 6; s++) last_stage_program[s] = ~0ull;
+        has_stage_program_mask = 0;
+        has_viewport = has_scissor = has_restart = false;
+        last_tex_pool = last_smp_pool = ~0ull;
+        std::memset(has_ubo_mask, 0, sizeof has_ubo_mask);
+        std::memset(has_ssbo_mask, 0, sizeof has_ssbo_mask);
+        std::memset(has_tex_mask, 0, sizeof has_tex_mask);
+        has_vb_mask = 0;
+    }
 };
 
 constexpr uint64_t kCommandBytes = 16, kControlBytes = 4;  // per recorded command
@@ -186,12 +235,29 @@ void note_drop(uint64_t h, const HandleEntry& e, uint64_t by, uint64_t by_start,
 }
 
 
+static std::atomic<uint64_t> g_cb_generation{1};
+static thread_local uint64_t s_last_cb_guest = 0;
+static thread_local uint64_t s_last_cb_gen = 0;
+static thread_local CommandBuffer* s_last_cb_ptr = nullptr;
+
 void CommandBufferInitialize(CPU& c) {  // NVNboolean (NVNcommandBuffer*, NVNdevice*)
-    make<CommandBuffer>(c.x[0]);
+    auto& cb = make<CommandBuffer>(c.x[0]);
+    const uint64_t gen = g_cb_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    s_last_cb_guest = c.x[0];
+    s_last_cb_gen = gen;
+    s_last_cb_ptr = &cb;
     c.x[0] = 1;
 }
 
-void CommandBufferFinalize(CPU& c) { destroy(c.x[0]); }
+void CommandBufferFinalize(CPU& c) {
+    g_cb_generation.fetch_add(1, std::memory_order_acq_rel);
+    if (s_last_cb_guest == c.x[0]) {
+        s_last_cb_guest = 0;
+        s_last_cb_gen = 0;
+        s_last_cb_ptr = nullptr;
+    }
+    destroy(c.x[0]);
+}
 
 void CommandBufferBeginRecording(CPU& c) {
     if (auto* cb = get<CommandBuffer>(c.x[0])) {
@@ -201,9 +267,8 @@ void CommandBufferBeginRecording(CPU& c) {
         } else {
             cb->recording = alloc_cmdlist();
         }
-        cb->last_stencil_ref = ~0u;
-        cb->last_stencil_mask = ~0u;
-        cb->last_stencil_value_mask = ~0u;
+        cb->logical_cmds = 0;
+        cb->reset_tracked_state();
     }
 }
 
@@ -234,7 +299,8 @@ void memory_query(CPU& c) {
     }
     std::lock_guard lk(cb->lock);
     uint64_t size = Command ? cb->command_size : cb->control_size;
-    uint64_t u = used(size, Command ? cb->command_base : cb->control_base, cb->recording->cmds.size(),
+    uint64_t u = used(size, Command ? cb->command_base : cb->control_base,
+                      std::max(cb->logical_cmds, cb->recording->cmds.size()),
                       Command ? kCommandBytes : kControlBytes);
     c.x[0] = What == 0 ? u : What == 1 ? size : size - u;
 }
@@ -257,7 +323,7 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
     const uint64_t cb_guest = c.x[0];
     if (auto* cb = get<CommandBuffer>(c.x[0])) {
         std::lock_guard lk(cb->lock);
-        size_t n = cb->recording->cmds.size() + 1;  // + the end of the list, so even an empty one used something
+        size_t n = std::max(cb->logical_cmds, cb->recording->cmds.size()) + 1;  // + the end of the list, so even an empty one used something
         start = cb->command_memory + cb->command_base;
         pool = cb->command_pool;
         cb->command_base = used(cb->command_size, cb->command_base, n, kCommandBytes);
@@ -429,25 +495,149 @@ void CallCommands(CPU& c) {
 }  // namespace
 
 void record(uint64_t guest, Cmd cmd, const void* blob, size_t size) {
-    auto* cb = get<CommandBuffer>(guest);
-    if (!cb) {
-        g_no_cb++;
-        return;
+    const uint64_t gen = g_cb_generation.load(std::memory_order_acquire);
+    CommandBuffer* cb = (guest && guest == s_last_cb_guest && gen == s_last_cb_gen) ? s_last_cb_ptr : nullptr;
+    if (__builtin_expect(!cb, 0)) {
+        cb = get<CommandBuffer>(guest);
+        if (!cb) {
+            g_no_cb++;
+            return;
+        }
+        s_last_cb_guest = guest;
+        s_last_cb_gen = gen;
+        s_last_cb_ptr = cb;
     }
     std::lock_guard lk(cb->lock);
-    if (cmd.op == Cmd::SetStencilRef) {
-        if (cb->last_stencil_ref == cmd.n) return;
-        cb->last_stencil_ref = cmd.n;
+    cb->logical_cmds++;
+    if (cmd.op == Cmd::BindUniformBuffer) {
+        const int st = cmd.i[0], idx = cmd.i[1];
+        if (st >= 0 && st < 6 && idx >= 0 && idx < 18) {
+            const uint32_t bit = 1u << idx;
+            if ((cb->has_ubo_mask[st] & bit) && cb->last_ubo_addr[st][idx] == cmd.a[0] &&
+                cb->last_ubo_size[st][idx] == cmd.a[1])
+                return;
+            cb->has_ubo_mask[st] |= bit;
+            cb->last_ubo_addr[st][idx] = cmd.a[0];
+            cb->last_ubo_size[st][idx] = cmd.a[1];
+        }
+    } else if (cmd.op == Cmd::BindStorageBuffer) {
+        const int st = cmd.i[0], idx = cmd.i[1];
+        if (st >= 0 && st < 6 && idx >= 0 && idx < 16) {
+            const uint32_t bit = 1u << idx;
+            if ((cb->has_ssbo_mask[st] & bit) && cb->last_ssbo_addr[st][idx] == cmd.a[0] &&
+                cb->last_ssbo_size[st][idx] == cmd.a[1])
+                return;
+            cb->has_ssbo_mask[st] |= bit;
+            cb->last_ssbo_addr[st][idx] = cmd.a[0];
+            cb->last_ssbo_size[st][idx] = cmd.a[1];
+        }
+    } else if (cmd.op == Cmd::BindTexture) {
+        const int st = cmd.i[0], idx = cmd.i[1];
+        if (st >= 0 && st < 6 && idx >= 0 && idx < 32) {
+            const uint32_t bit = 1u << idx;
+            if ((cb->has_tex_mask[st] & bit) && cb->last_tex_handle[st][idx] == cmd.a[0]) return;
+            cb->has_tex_mask[st] |= bit;
+            cb->last_tex_handle[st][idx] = cmd.a[0];
+        }
+    } else if (cmd.op == Cmd::BindVertexBuffer) {
+        const int idx = cmd.i[0];
+        if (idx >= 0 && idx < 16) {
+            const uint32_t bit = 1u << idx;
+            if ((cb->has_vb_mask & bit) && cb->last_vb_addr[idx] == cmd.a[0] && cb->last_vb_size[idx] == cmd.a[1])
+                return;
+            cb->has_vb_mask |= bit;
+            cb->last_vb_addr[idx] = cmd.a[0];
+            cb->last_vb_size[idx] = cmd.a[1];
+        }
+    } else if (cmd.op == Cmd::SetViewport) {
+        if (cb->has_viewport && std::memcmp(cb->last_viewport, cmd.i, sizeof cb->last_viewport) == 0) return;
+        std::memcpy(cb->last_viewport, cmd.i, sizeof cb->last_viewport);
+        cb->has_viewport = true;
+    } else if (cmd.op == Cmd::SetScissor) {
+        if (cb->has_scissor && std::memcmp(cb->last_scissor, cmd.i, sizeof cb->last_scissor) == 0) return;
+        std::memcpy(cb->last_scissor, cmd.i, sizeof cb->last_scissor);
+        cb->has_scissor = true;
+    } else if (cmd.op == Cmd::SetTexturePool) {
+        if (cb->last_tex_pool == cmd.a[0]) return;
+        cb->last_tex_pool = cmd.a[0];
+    } else if (cmd.op == Cmd::SetSamplerPool) {
+        if (cb->last_smp_pool == cmd.a[0]) return;
+        cb->last_smp_pool = cmd.a[0];
+    } else if (cmd.op == Cmd::SetPrimitiveRestart) {
+        if (cb->has_restart && cb->last_restart == cmd.n && cb->last_restart_idx == cmd.a[0]) return;
+        cb->has_restart = true;
+        cb->last_restart = cmd.n;
+        cb->last_restart_idx = cmd.a[0];
+    } else if (cmd.op == Cmd::BindDeferred) {
+        std::memset(cb->has_ubo_mask, 0, sizeof cb->has_ubo_mask);
+        std::memset(cb->has_ssbo_mask, 0, sizeof cb->has_ssbo_mask);
+        std::memset(cb->has_tex_mask, 0, sizeof cb->has_tex_mask);
+    } else if (cmd.op == Cmd::SetStencilRef) {
+        const uint32_t key = (cmd.mask << 8) | cmd.n;
+        if (cb->last_stencil_ref == key) return;
+        cb->last_stencil_ref = key;
     } else if (cmd.op == Cmd::SetStencilMask) {
-        if (cb->last_stencil_mask == cmd.n) return;
-        cb->last_stencil_mask = cmd.n;
+        const uint32_t key = (cmd.mask << 8) | cmd.n;
+        if (cb->last_stencil_mask == key) return;
+        cb->last_stencil_mask = key;
     } else if (cmd.op == Cmd::SetStencilValueMask) {
-        if (cb->last_stencil_value_mask == cmd.n) return;
-        cb->last_stencil_value_mask = cmd.n;
+        const uint32_t key = (cmd.mask << 8) | cmd.n;
+        if (cb->last_stencil_value_mask == key) return;
+        cb->last_stencil_value_mask = key;
+    } else if (cmd.op == Cmd::BindProgram) {
+        const uint32_t mask = cmd.mask & 0x3Fu;
+        if (mask && (cb->has_stage_program_mask & mask) == mask) {
+            bool all_same = true;
+            for (int s = 0; s < 6; s++) {
+                if ((mask >> s & 1) && cb->last_stage_program[s] != cmd.a[0]) {
+                    all_same = false;
+                    break;
+                }
+            }
+            if (all_same) return;
+        }
+        for (int s = 0; s < 6; s++) {
+            if (mask >> s & 1) cb->last_stage_program[s] = cmd.a[0];
+        }
+        cb->has_stage_program_mask |= mask;
+    } else if (cmd.op == Cmd::BindMultisampleState) {
+        if (cb->has_multisample && cb->last_multisample == cmd.n) return;
+        cb->has_multisample = true;
+        cb->last_multisample = cmd.n;
+    } else if (cmd.op == Cmd::BindColorState && blob && size == sizeof(ColorStateInfo)) {
+        if (cb->has_color_state && std::memcmp(&cb->last_color, blob, sizeof(ColorStateInfo)) == 0) return;
+        std::memcpy(&cb->last_color, blob, sizeof(ColorStateInfo));
+        cb->has_color_state = true;
+    } else if (cmd.op == Cmd::BindChannelMaskState && blob && size == sizeof(ChannelMaskInfo)) {
+        if (cb->has_channel_mask && std::memcmp(&cb->last_channel_mask, blob, sizeof(ChannelMaskInfo)) == 0) return;
+        std::memcpy(&cb->last_channel_mask, blob, sizeof(ChannelMaskInfo));
+        cb->has_channel_mask = true;
+    } else if (cmd.op == Cmd::BindDepthStencilState && blob && size == sizeof(DepthStencilInfo)) {
+        if (cb->has_depth_stencil && std::memcmp(&cb->last_depth_stencil, blob, sizeof(DepthStencilInfo)) == 0) return;
+        std::memcpy(&cb->last_depth_stencil, blob, sizeof(DepthStencilInfo));
+        cb->has_depth_stencil = true;
+    } else if (cmd.op == Cmd::BindPolygonState && blob && size == sizeof(PolygonInfo)) {
+        if (cb->has_polygon && std::memcmp(&cb->last_polygon, blob, sizeof(PolygonInfo)) == 0) return;
+        std::memcpy(&cb->last_polygon, blob, sizeof(PolygonInfo));
+        cb->has_polygon = true;
+    } else if (cmd.op == Cmd::BindBlendState && blob && size == sizeof(BlendTarget)) {
+        const auto* bt = static_cast<const BlendTarget*>(blob);
+        if (bt->target < 8) {
+            if (cb->has_blend[bt->target] && std::memcmp(&cb->last_blend[bt->target], bt, sizeof(BlendTarget)) == 0)
+                return;
+            cb->last_blend[bt->target] = *bt;
+            cb->has_blend[bt->target] = true;
+        }
+    } else if (cmd.op == Cmd::BindVertexAttribs && blob && cmd.n <= 32 && size == cmd.n * sizeof(VertexAttrib)) {
+        if (cb->last_attrib_n == cmd.n && std::memcmp(cb->last_attribs, blob, size) == 0) return;
+        cb->last_attrib_n = cmd.n;
+        std::memcpy(cb->last_attribs, blob, size);
+    } else if (cmd.op == Cmd::BindVertexStreams && blob && cmd.n <= 32 && size == cmd.n * sizeof(VertexStream)) {
+        if (cb->last_stream_n == cmd.n && std::memcmp(cb->last_streams, blob, size) == 0) return;
+        cb->last_stream_n = cmd.n;
+        std::memcpy(cb->last_streams, blob, size);
     } else if (cmd.op == Cmd::CallList) {
-        cb->last_stencil_ref = ~0u;
-        cb->last_stencil_mask = ~0u;
-        cb->last_stencil_value_mask = ~0u;
+        cb->reset_tracked_state();
     }
     if (blob) {
         cmd.blob = uint32_t(cb->recording->blobs.size());

@@ -40,7 +40,6 @@ std::vector<Upload> g_result;
 int32_t g_object_query = -1;     // its draw's query (-1: none yet)
 uint32_t g_object_draws = 0;     // draws since the ResetCounter
 std::unordered_map<uint64_t, int32_t> g_reports;  // report address -> query (-1: unknown)
-int32_t g_conditional = -1;      // the query the draws follow until SetRenderEnable (-1: drawn)
 struct {
     uint64_t queries = 0, conditional = 0, unknown = 0, copies = 0, several = 0, used_up = 0;
     uint64_t visible = 0, hidden = 0;  // NX_OCCL_STATS=1: query results
@@ -180,8 +179,10 @@ void copy_results(VkCommandBuffer cb) {
 
 }  // namespace
 
+int32_t g_conditional_query = -1;  // the query the draws follow until SetRenderEnable (-1: drawn)
+
 void occlusion_begin_submit(VkCommandBuffer cb) {
-    g_occl_object = false, g_object_query = -1, g_object_draws = 0, g_conditional = -1;
+    g_occl_object = false, g_object_query = -1, g_object_draws = 0, g_conditional_query = -1;
     g_cpu_sample_this = false;
     if (cpu_on()) {
         g_cpu_submit_id++;
@@ -307,7 +308,7 @@ bool occlusion_object_skipped() {
 
 void occlusion_conditional(VkCommandBuffer cb, const Cmd& c, const Targets& t) {
     trace("conditional", c, t);
-    g_conditional = -1;
+    g_conditional_query = -1;
     g_state.cond_on = true, g_state.cond_mode = c.n, g_state.cond_addr = c.a[0];
     if (forced()) {  // NX_OCCL_FORCE=0|1
         g_state.render_enable = std::getenv("NX_OCCL_FORCE")[0] != '0';
@@ -336,10 +337,10 @@ void occlusion_conditional(VkCommandBuffer cb, const Cmd& c, const Targets& t) {
         return;
     }
     if (uint32_t(it->second) >= g_copied) copy_results(cb);
-    g_conditional = it->second;
+    g_conditional_query = it->second;
 }
 
-void occlusion_render_enable() { g_conditional = -1; }  // SetRenderEnable ends the conditional draws
+void occlusion_render_enable() { g_conditional_query = -1; }  // SetRenderEnable ends the conditional draws
 
 int32_t occlusion_query_begin_slow(VkCommandBuffer cb) {
     if (cpu_on()) {
@@ -381,11 +382,11 @@ void occlusion_query_end_slow(VkCommandBuffer cb, int32_t q) {
     p_vkCmdEndQuery(cb, g_pool, uint32_t(q));
 }
 
-bool occlusion_draw(VkCommandBuffer cb, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
-                    int32_t vertex_offset, uint32_t first_instance) {
-    if (g_conditional < 0 || uint32_t(g_conditional) >= g_result.size()) return false;
+bool occlusion_draw_slow(VkCommandBuffer cb, bool indexed, uint32_t count, uint32_t instances, uint32_t first,
+                         int32_t vertex_offset, uint32_t first_instance) {
+    if (g_conditional_query < 0 || uint32_t(g_conditional_query) >= g_result.size()) return false;
     if (first_instance && !vk_features().drawIndirectFirstInstance) return false;
-    const Upload& r = g_result[size_t(g_conditional)];
+    const Upload& r = g_result[size_t(g_conditional_query)];
     if (indexed) {
         VkDrawIndexedIndirectCommand a{count, instances, first, vertex_offset, first_instance};
         Upload args = upload(&a, sizeof a, 4);

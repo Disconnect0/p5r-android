@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <unordered_set>
 
@@ -31,6 +32,7 @@ std::atomic<uint64_t> g_pipelines{0}, g_pipeline_ns{0}, g_worker_pipelines{0}, g
 uint64_t g_waited = 0, g_waited_ns = 0, g_skipped = 0, g_prewarmed = 0;
 std::mutex g_warm_lock;
 std::mutex g_disk_lock;
+std::shared_mutex g_cache_rwlock;
 std::atomic<bool> g_cache_dirty{false};
 std::atomic<bool> g_save_in_flight{false};
 std::unordered_set<uint64_t> g_known;  // hashes of the records in the .keys file or already queued to it
@@ -74,6 +76,8 @@ std::vector<uint8_t> read_cache_file(const std::string& path) {
 
 }  // namespace
 
+std::shared_mutex& pipeline_cache_mutex() { return g_cache_rwlock; }
+
 VkPipelineCache pipeline_cache() {
     if (g_tried) return g_cache;
     g_tried = true;
@@ -81,22 +85,13 @@ VkPipelineCache pipeline_cache() {
     VkPhysicalDeviceProperties p{};
     p_vkGetPhysicalDeviceProperties(vk_physical(), &p);
     char name[64];
-    std::snprintf(name, sizeof name, "/pipelines_%04x_%04x.bin", p.vendorID, p.deviceID);
+    std::snprintf(name, sizeof name, "/pipelines_%04x_%04x_v2.bin", p.vendorID, p.deviceID);
     g_path = plat::data_root() + name;
 
     std::vector<uint8_t> data = read_cache_file(g_path);
     if (!data.empty() && !valid_cache_blob(data, p)) {
         log("nvn/vk: pipeline cache %s has mismatched header, resetting", g_path.c_str());
         data.clear();
-    }
-    bool migrated = false;
-    if (const char* legacy = plat::get_pipeline_cache_path(); legacy && *legacy && g_path != legacy) {
-        std::vector<uint8_t> leg_data = read_cache_file(legacy);
-        if (valid_cache_blob(leg_data, p) && leg_data.size() > data.size()) {
-            log("nvn/vk: migrating pipeline cache from %s (%zu bytes -> %s)", legacy, leg_data.size(), g_path.c_str());
-            data = std::move(leg_data);
-            migrated = true;
-        }
     }
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
@@ -105,9 +100,8 @@ VkPipelineCache pipeline_cache() {
         ci.initialDataSize = 0, ci.pInitialData = nullptr;  // a cache the driver refuses: start empty
         p_vkCreatePipelineCache(vk_device(), &ci, nullptr, &g_cache);
     }
-    g_saved_size = migrated ? 0 : data.size();
+    g_saved_size = data.size();
     log("nvn/vk: pipeline cache %s (%zu bytes loaded)", g_path.c_str(), data.size());
-    if (migrated) pipeline_cache_save();
     return g_cache;
 }
 
@@ -115,10 +109,14 @@ void pipeline_cache_save() {
     if (!g_cache) return;
     warm_save();
     std::lock_guard dlk(g_disk_lock);
+    std::vector<uint8_t> data;
     size_t n = 0;
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || n <= g_saved_size) return;
-    std::vector<uint8_t> data(n);
-    if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    {
+        std::unique_lock<std::shared_mutex> cache_lk(g_cache_rwlock);
+        if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, nullptr) != VK_SUCCESS || n <= g_saved_size) return;
+        data.resize(n);
+        if (p_vkGetPipelineCacheData(vk_device(), g_cache, &n, data.data()) != VK_SUCCESS) return;
+    }
     std::string tmp = g_path + ".tmp";
     if (FILE* f = plat::fopen_utf8(tmp, "wb")) {
         bool ok = std::fwrite(data.data(), 1, n, f) == n;
@@ -168,6 +166,14 @@ bool warm_load(std::vector<WarmRec>& out) {
             return file_ok;
         };
         ok = load_from(keys_path(), false);
+        if (g_path.size() > 7 && g_path.substr(g_path.size() - 7) == "_v2.bin") {
+            std::string v1_keys = g_path.substr(0, g_path.size() - 7) + ".keys";
+            size_t before = out.size();
+            if (load_from(v1_keys, true) && out.size() > before) {
+                log("nvn/vk: imported %zu pipeline keys from %s", out.size() - before, v1_keys.c_str());
+                ok = true;
+            }
+        }
         if (const char* legacy = plat::get_pipeline_cache_path(); legacy && *legacy) {
             std::string leg = legacy;
             std::string leg_keys = (leg.size() > 4 ? leg.substr(0, leg.size() - 4) : leg) + ".keys";

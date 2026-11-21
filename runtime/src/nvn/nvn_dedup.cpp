@@ -30,10 +30,27 @@ struct DedupSpan {
     const uint8_t* p = nullptr;
     uint64_t size = 0;
     uint32_t front_idx = 0;
+    int32_t next = -1;
 };
-// Recorded spans in the current submit for linear invalidation, keeping reserved capacity across submits.
-std::vector<DedupSpan> g_copies;
+constexpr uint32_t kPageBuckets = 1024;
+int32_t g_page_head[kPageBuckets];
+bool g_page_buckets_inited = false;
+std::vector<uint16_t> g_touched_buckets;
+std::vector<DedupSpan> g_page_spans;
+std::vector<DedupSpan> g_multi_spans;
+const uint8_t* g_multi_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
+const uint8_t* g_multi_hi = nullptr;
 uint64_t g_saved = 0, g_copied = 0;
+uint64_t g_uploads_since_inval = 0;
+const uint8_t* s_last_inval_p = nullptr;
+uint64_t s_last_inval_size = 0;
+
+inline void ensure_page_buckets_init() {
+    if (__builtin_expect(!g_page_buckets_inited, 0)) {
+        std::memset(g_page_head, 0xFF, sizeof g_page_head);
+        g_page_buckets_inited = true;
+    }
+}
 
 // Open-addressed front hash table (linear probing) per address hash. Slots of the current generation hold active
 // entries or tombstones (p == nullptr) from dedup_invalidate; dedup_reset advances the generation in O(1).
@@ -42,14 +59,14 @@ struct Front {
     uint64_t generation = 0;
     Entry entry;
 };
-constexpr size_t kFrontSlots = 65536;
+constexpr size_t kFrontSlots = 16384;
 constexpr uint32_t kMaxProbe = 8;
 Front g_front[kFrontSlots];
 uint64_t g_generation = 1;
 static uint64_t s_dedup_inval = 1;
 inline uint32_t front_index_of(const uint8_t* p) {
     const uintptr_t v = uintptr_t(p);
-    return uint32_t(((v >> 4) ^ (v >> 12) ^ (v >> 21) ^ (v >> 30)) & (kFrontSlots - 1));
+    return uint32_t(((v >> 4) ^ (v >> 12) ^ (v >> 20) ^ (v >> 28)) & (kFrontSlots - 1));
 }
 
 // NX_UPLOAD_STATS: bytes copied per kind, and of those the bytes equal to the last copy of the same address and size.
@@ -135,9 +152,28 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
         s_last_dedup_p = p;
         s_last_dedup_gen = g_generation;
         s_last_dedup_entry = ent;
+        g_uploads_since_inval++;
         if (!existing || size > prev_size) {
-            if (g_copies.capacity() < 1024) g_copies.reserve(1024);
-            g_copies.push_back({p, size, target_idx});
+            ensure_page_buckets_init();
+            const uintptr_t pg0 = uintptr_t(p) >> 16;
+            const uintptr_t pg1 = (uintptr_t(p) + size - 1) >> 16;
+            if (pg0 == pg1) {
+                const uint32_t b = uint32_t(pg0 & (kPageBuckets - 1));
+                int32_t head = g_page_head[b];
+                if (head < 0) {
+                    if (g_touched_buckets.capacity() < 512) g_touched_buckets.reserve(512);
+                    g_touched_buckets.push_back(uint16_t(b));
+                }
+                if (g_page_spans.capacity() < 1024) g_page_spans.reserve(1024);
+                const int32_t idx = int32_t(g_page_spans.size());
+                g_page_spans.push_back({p, size, target_idx, head});
+                g_page_head[b] = idx;
+            } else {
+                if (g_multi_spans.capacity() < 128) g_multi_spans.reserve(128);
+                g_multi_spans.push_back({p, size, target_idx, -1});
+                if (p < g_multi_lo) g_multi_lo = p;
+                if (p + size > g_multi_hi) g_multi_hi = p + size;
+            }
         }
     };
     Upload u;
@@ -158,29 +194,65 @@ uint64_t dedup_generation() { return g_generation; }
 uint64_t dedup_inval_epoch() { return s_dedup_inval; }
 
 void dedup_reset() {
-    g_copies.clear(), g_generation++;
+    ensure_page_buckets_init();
+    for (uint16_t b : g_touched_buckets) g_page_head[b] = -1;
+    g_touched_buckets.clear();
+    g_page_spans.clear();
+    g_multi_spans.clear();
+    g_multi_lo = reinterpret_cast<const uint8_t*>(UINTPTR_MAX);
+    g_multi_hi = nullptr;
+    g_generation++;
+    g_uploads_since_inval = 0;
+    s_last_inval_p = nullptr;
+    s_last_inval_size = 0;
     s_last_dedup_p = nullptr;
 }
 
 void dedup_invalidate(const uint8_t* p, uint64_t size) {
     s_dedup_inval++;
+    if (g_uploads_since_inval == 0 && p == s_last_inval_p && size <= s_last_inval_size) return;
+    s_last_inval_p = p;
+    s_last_inval_size = size;
     stream_cache_invalidate(p, size);
     index_cache_invalidate(p, size);
     sets_invalidate_range(p, size);
     s_last_dedup_p = nullptr;
-    if (!p || !size || g_copies.empty()) return;
+    if (!p || !size || (g_page_spans.empty() && g_multi_spans.empty())) return;
+    ensure_page_buckets_init();
     const uint8_t* const end = p + size;
-    size_t kept = 0;
-    for (size_t i = 0; i < g_copies.size(); i++) {
-        const DedupSpan& span = g_copies[i];
-        if (span.p < end && span.p + span.size > p) {
-            Front& f = g_front[span.front_idx];
-            if (f.generation == g_generation && f.p == span.p) f.p = nullptr;
-        } else {
-            g_copies[kept++] = span;
+    const uintptr_t pg0 = uintptr_t(p) >> 16;
+    const uintptr_t pg1 = (uintptr_t(end) - 1) >> 16;
+    const uintptr_t count = std::min<uintptr_t>(pg1 - pg0 + 1, kPageBuckets);
+    for (uintptr_t step = 0; step < count; step++) {
+        const uint32_t b = uint32_t((pg0 + step) & (kPageBuckets - 1));
+        int32_t* link = &g_page_head[b];
+        int32_t cur = *link;
+        while (cur >= 0) {
+            DedupSpan& span = g_page_spans[size_t(cur)];
+            const int32_t nxt = span.next;
+            if (span.p < end && span.p + span.size > p) {
+                Front& f = g_front[span.front_idx];
+                if (f.generation == g_generation && f.p == span.p) f.p = nullptr;
+                *link = nxt;
+            } else {
+                link = &span.next;
+            }
+            cur = nxt;
         }
     }
-    g_copies.resize(kept);
+    if (!g_multi_spans.empty() && p < g_multi_hi && end > g_multi_lo) {
+        size_t kept = 0;
+        for (size_t i = 0; i < g_multi_spans.size(); i++) {
+            const DedupSpan& span = g_multi_spans[i];
+            if (span.p < end && span.p + span.size > p) {
+                Front& f = g_front[span.front_idx];
+                if (f.generation == g_generation && f.p == span.p) f.p = nullptr;
+            } else {
+                g_multi_spans[kept++] = span;
+            }
+        }
+        g_multi_spans.resize(kept);
+    }
 }
 
 // c[0], the NVN driver's constants, as far as shaders read them (docs/nvn/TRANSLATOR.md): buffer descriptors

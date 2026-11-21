@@ -1,14 +1,11 @@
 // The VkImage behind an NVN texture, and its layout transitions (split from nvn_vk.cpp). Under the GPU lock.
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
-#include <cstring>
 #include <map>
 #include <memory>
 #include <tuple>
 
 #include "nvn_vk.h"
-#include "nvn_ultrawide.h"
 #include "platform.h"
 
 namespace nx::nvn {
@@ -84,57 +81,80 @@ std::map<StorageKey, std::weak_ptr<GpuImage>> g_live_images;
 // NX_HUD_1080=1 (games turn it on, P5R by default): a plain 2D 1280x720 render target (COMPRESSIBLE, flags 8: P5R's
 // are 0xc, its window textures 0xd), not pitch-linear (the CPU writes those), one level and sample.
 bool hud_1080_texture(const Texture& t) {
-    const uint32_t base_height = [] {
-        const char* handheld = std::getenv("NX_HANDHELD");
-        return handheld ? 720u : 1080u;
+    static const bool on = [] {
+        const char* e = std::getenv("NX_HUD_1080");
+        return e && e[0] == '1';
     }();
-    const uint32_t guest_width = t.guest_width ? t.guest_width : t.width;
-    if (std::fabs(hud_scale() - 1.0f) < 0.001f || t.target != 1 || guest_width != base_height * 16u / 9u ||
-        t.height != base_height || !(t.flags & 8) || t.stride || t.levels > 1 ||
+    if (!on || t.target != 1 || (!t.uw && t.width != 1280) || t.height != 720 || !(t.flags & 8) || t.stride || t.levels > 1 ||
         t.samples > 1)
         return false;
     static std::map<std::pair<uint32_t, uint32_t>, bool> seen;
     if (!seen[{t.format, t.flags}]) {
         seen[{t.format, t.flags}] = true;
-        log("nvn: hud: %ux%u targets of format %#x (flags %#x) made at %dx%d", guest_width, t.height, t.format, t.flags,
-            hud_up(int32_t(guest_width)), hud_up(int32_t(t.height)));
+        log("nvn: hud 1080: %ux720 targets of format %#x (flags %#x) made at %dx%d", t.width, t.format, t.flags,
+            hud_up(int32_t(t.width)), hud_up(720));
     }
     return true;
 }
 
-float hud_scale() {
-    static const float scale = [] {
-        const char* handheld = std::getenv("NX_HANDHELD");
-        const float base = handheld ? 720.0f : 1080.0f;
+int32_t hud_quarters() {
+    static const int32_t q = [] {
         const char* e = std::getenv("NX_HUD_RES");
-        if (!e || !*e) return std::getenv("NX_HUD_1080") && std::getenv("NX_HUD_1080")[0] == '1' ? 1080.0f / base : 1.0f;
-        if (!std::strcmp(e, "native")) {
-            uint32_t w = 0, h = 0;
-            plat::window_size(w, h);
-            return h ? float(h) / base : 1.5f;
-        }
-        int h = std::atoi(e);
-        return h > 0 ? float(h) / base : 1.0f;
+        return e && std::atoi(e) == 900 ? 5 : 6;
     }();
-    return scale;
+    return q;
 }
 
-bool low_3d_on() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_LOW_3D");
-        return e && e[0] == '1';
+namespace {
+int low_3d_mode() {
+    static const int m = [] {
+        if (const char* e = std::getenv("NX_LOW_3D"); e && e[0] != '\0') {
+            if (e[0] == '0') return 0;
+            if (e[0] == '2' || std::strstr(e, "360")) return 2;  // 2/3 (640x360)
+            if (e[0] == '3' || std::strstr(e, "540")) return 3;  // 5/6 (800x450)
+            return 1;                                            // 3/4 (720x405)
+        }
+        for (const char* k : {"NX_RES", "NX_RENDER_RES", "RESOLUTION", "resolution"}) {
+            if (const char* r = std::getenv(k); r && r[0]) {
+                if (std::strncmp(r, "360", 3) == 0) return 2;
+                if (std::strncmp(r, "480", 3) == 0) return 1;
+                if (std::strncmp(r, "540", 3) == 0) return 3;
+            }
+        }
+        std::string cfg = plat::setting("NX_RES");
+        if (cfg.empty()) cfg = plat::setting("RESOLUTION");
+        if (cfg.empty()) cfg = plat::setting("resolution");
+        if (cfg == "360p" || cfg == "360") return 2;
+        if (cfg == "480p" || cfg == "480") return 1;
+        if (cfg == "540p" || cfg == "540") return 3;
+        return 0;
     }();
-    return on;
+    return m;
+}
+}  // namespace
+
+bool low_3d_on() { return low_3d_mode() > 0; }
+int32_t low_3d_num() {
+    const int m = low_3d_mode();
+    return m == 2 ? 2 : m == 3 ? 5 : 3;
+}
+int32_t low_3d_den() {
+    const int m = low_3d_mode();
+    return m == 2 ? 3 : m == 3 ? 6 : 4;
 }
 
 bool low_3d_texture(const Texture& t) {
     if (!low_3d_on() || t.stride) return false;
-    // P5R 3D scene render targets (960x540) and post-process chain targets (480x270, 240x135) in handheld mode
+    // P5R 3D scene render targets (960x540) and post-process chain targets (480x270, 240x135) in handheld mode,
+    // including widened ultrawide targets (t.uw == true, e.g. 1200x540 -> 1000x450 at 540p / 900x405 at 480p).
     if (t.target == 1 && t.levels <= 1 && t.samples <= 1) {
-        if ((t.width == 960 && t.height == 540) ||
-            (t.width == 480 && t.height == 270) ||
-            (t.width == 240 && t.height == 135))
+        if (t.uw) {
+            if (t.height == 540 || t.height == 270 || t.height == 135) return true;
+        } else if ((t.width == 960 && t.height == 540) ||
+                   (t.width == 480 && t.height == 270) ||
+                   (t.width == 240 && t.height == 135)) {
             return true;
+        }
     }
     return false;
 }
@@ -155,20 +175,35 @@ GpuImage* image_of(uint64_t guest) {
     static const bool old_rule = std::getenv("NX_SHARE_NO_POOL_SWIZZLE") != nullptr;  // bisecting
     bool widened = t->format == 0x1 && t->pool_swizzle == 0x02010101u;
     if (share && t->memory && (old_rule ? t->pool_swizzle == 0 : !widened))
-        if (auto it = g_live_images.find(key); it != g_live_images.end())
-            if (auto shared = it->second.lock(); shared && shared->image && !shared->alpha_from_r) {
+        if (auto it = g_live_images.find(key); it != g_live_images.end()) {
+            if (auto shared = it->second.lock(); shared && shared->image && !shared->alpha_from_r &&
+                                                 (shared->last_memory == 0 || shared->last_memory == t->memory) &&
+                                                 !(shared->retired && (shared->rendered || shared->texels))) {
+                if (shared->in_free_pool) claim_free_image(shared);
                 static uint64_t shares = 0;
                 if (++shares % 1000 == 1) log("nvn/vk: %llu textures shared an image with another", (unsigned long long)shares);
+                shared->retired = false;
+                shared->last_memory = t->memory;
                 t->image = shared;
-                // A CPU-written (pitch-linear) texture made again over memory another live object still covers: the
-                // image holds what that one uploaded, the memory may hold more. P5R makes a texture per film picture
-                // over a ring of six NV12 buffers; when the previous object over a buffer was not finalized yet, the
-                // new picture's luma was never uploaded and the film showed the picture of six frames before for one
-                // or two frames (its stutter, 21% of the frames on the Adreno 610). NX_SHARE_KEEP=1: as before.
+                // A texture made again over memory another live object still covers (or whose finalized owner was kept
+                // in defer_object / g_grave / g_free_images): compare a content hash of guest pool memory against what
+                // the image uploaded. If the bytes match (e.g. Quick Travel / Pause menu UI textures re-initialized at
+                // the same pool address), reuse the uploaded GpuImage with zero untiling and zero pass breaks; if the
+                // bytes differ (e.g. Shibuya streaming new foliage over a destroyed normal map, Issue #269), mark dirty
+                // so ensure_contents() re-uploads the new texels.
                 static const bool keep = std::getenv("NX_SHARE_KEEP") != nullptr;
-                if (!keep && t->stride && !shared->rendered) t->mark_dirty(0, UINT64_MAX);
+                if (!keep && !shared->rendered) {
+                    const bool unchanged = !t->stride && !shared->texels && t->memory && t->storage_size && shared->uploaded &&
+                                           shared->upload_storage_size == t->storage_size &&
+                                           shared->upload_sample_hash != 0 &&
+                                           shared->upload_sample_hash ==
+                                               tex_sample_hash(reinterpret_cast<const uint8_t*>(t->memory), t->storage_size);
+                    if (!unchanged) t->mark_dirty(0, UINT64_MAX);
+                }
                 return shared.get();
             }
+            if (it->second.expired()) g_live_images.erase(it);
+        }
     if ((t->image = reuse_image(*t))) return t->image.get();
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
@@ -187,16 +222,11 @@ GpuImage* image_of(uint64_t guest) {
     img->width = std::max(1u, t->width);
     img->height = (t->target == 0 || t->target == 3) && !one_d ? 1u : std::max(1u, t->height);
     img->levels = std::max(1u, t->levels);
-    if (hud_1080_texture(*t)) {
-        img->hud = true;
-        const uint32_t base_width = t->guest_width ? t->guest_width : t->width;
-        img->width = t->uw ? uw_widen(uint32_t(hud_up(int32_t(base_width)))) : uint32_t(hud_up(int32_t(base_width)));
-        img->height = uint32_t(hud_up(int32_t(t->height)));
-    }
+    if (hud_1080_texture(*t)) img->hud = true, img->width = uint32_t(hud_up(int32_t(t->width))), img->height = uint32_t(hud_up(720));
     if (low_3d_texture(*t)) {
         img->low_3d = true;
-        img->width = std::max(1u, (t->width * 3) / 4);   // 960->720, 480->360, 240->180
-        img->height = std::max(1u, (t->height * 3) / 4); // 540->405, 270->202, 135->101
+        img->width = std::max(1u, uint32_t(low_3d_down(int32_t(t->width))));
+        img->height = std::max(1u, uint32_t(low_3d_down(int32_t(t->height))));
     }
     static const bool low_shadows = [] {
         const char* e = std::getenv("NX_MALI_LOW_SHADOWS");
@@ -297,6 +327,20 @@ GpuImage* image_of(uint64_t guest) {
         img->storage = !no_storage && !compressed && !aspect && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
         if (img->storage) ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     }
+    if (auto pooled = take_free_image(*img)) {
+        pooled->nvn_format = img->nvn_format;
+        pooled->uw = img->uw;
+        pooled->hud = img->hud;
+        pooled->low_3d = img->low_3d;
+        pooled->shadow = img->shadow;
+        constexpr VkComponentSwizzle kSwizzle[] = {VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R,
+                                                   VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,   VK_COMPONENT_SWIZZLE_A};
+        pooled->swizzle = {kSwizzle[t->swizzle[0]], kSwizzle[t->swizzle[1]], kSwizzle[t->swizzle[2]], kSwizzle[t->swizzle[3]]};
+        pooled->last_memory = t->memory;
+        t->image = pooled;
+        if (t->memory) g_live_images[key] = pooled;
+        return pooled.get();
+    }
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!image_supported(ci, t->format)) return nullptr;
     if (!check(p_vkCreateImage(vk_device(), &ci, nullptr, &img->image), "vkCreateImage")) return nullptr;
@@ -323,6 +367,7 @@ GpuImage* image_of(uint64_t guest) {
         log("nvn/vk: image %llu for texture %llx (memory %llx): %ux%u x%u layers, %u levels, target %u format %#x -> %d",
             (unsigned long long)created, (unsigned long long)guest, (unsigned long long)t->memory,
             img->width, img->height, img->layers, img->levels, t->target, t->format, int(img->format));
+    img->last_memory = t->memory;
     t->image = img;
     if (t->memory) g_live_images[key] = img;
     return img.get();

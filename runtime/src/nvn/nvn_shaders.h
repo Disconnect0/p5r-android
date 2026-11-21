@@ -10,6 +10,7 @@
 // tests/shader_cache_test.cpp can run the same code over all 12,717 shaders (build with -DNX_SHADERS_STANDALONE).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -132,6 +133,8 @@ struct ShaderReflection {
     std::vector<ShaderIo> inputs, outputs;         // Location-decorated Input/Output variables (not built-ins)
     std::vector<uint32_t> builtins_in, builtins_out;  // SPIR-V BuiltIn values (on variables or block members)
     bool uses_support_buffer = false;
+    bool uses_discard = false;  // OpKill / OpTerminateInvocation / OpDemoteToHelperInvocationEXT
+    uint32_t output_mask = 0;   // bit k: fragment shader writes Location k (k < 8)
 
     const DescriptorBinding* find(uint32_t set, uint32_t binding) const;
     // Vertex: the attribute locations the shader reads. Fragment: the render targets it writes.
@@ -205,12 +208,26 @@ void support_buffer_set_viewport(SupportBuffer& sb, float width, float height, b
 
 // ---- one stage ---------------------------------------------------------------------------------------------------
 
+struct ShaderAtomicBool {
+    std::atomic<bool> v{false};
+    ShaderAtomicBool() = default;
+    ShaderAtomicBool(bool b) : v(b) {}
+    ShaderAtomicBool(const ShaderAtomicBool& o) : v(o.v.load(std::memory_order_acquire)) {}
+    ShaderAtomicBool& operator=(const ShaderAtomicBool& o) {
+        v.store(o.v.load(std::memory_order_acquire), std::memory_order_release);
+        return *this;
+    }
+    bool load(std::memory_order m = std::memory_order_seq_cst) const { return v.load(m); }
+    void store(bool b, std::memory_order m = std::memory_order_seq_cst) { v.store(b, m); }
+};
+
 struct ShaderInfo {
     std::string hash;
     ShaderStage stage = ShaderStage::Unknown;  // from the SPIR-V execution model
     std::vector<uint32_t> spirv;
     ShaderReflection refl;
     ShaderControl control;
+    ShaderAtomicBool control_ready{false};
     // c[1]: the constant data at code block + control.const_offset. Copied because the game may reuse the pool; it
     // can also be bound in place (code GPU address + const_offset, 0x100-aligned). The SPIR-V declares every c[k] as
     // vec4[4096]; bind at least const_size rounded up to 16.
@@ -221,6 +238,11 @@ struct ShaderInfo {
     // on use, as before.
     bool masks_known = false;
     uint64_t dynamic_uniforms = 0, written_storage = 0;
+    // Precomputed shader classification flags (set once at load time, zero per-draw string compares).
+    bool is_p5r_bloom_blur = false;
+    bool is_known_fullscreen_fs = false;
+    bool is_copy_fs = false;
+    bool is_passthrough_vs = false;
 };
 
 // Builds a ShaderInfo from a code block, its control section and the SPIR-V words (no I/O). `resources` = the

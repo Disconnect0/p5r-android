@@ -13,6 +13,7 @@ namespace nx {
 // ---- logging --------------------------------------------------------------------------------------------------
 
 void log(const char* fmt, ...);
+void begin_crash_log();  // forces crash handler logs into nx_crash.log even if NX_ENABLE_LOG=0
 [[noreturn]] void fatal(const char* fmt, ...);
 extern bool g_trace;  // verbose tracing (NX_TRACE=1)
 

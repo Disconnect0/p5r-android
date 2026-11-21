@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <shared_mutex>
 #include <vector>
 
 #include "nvn_shaders.h"
@@ -80,10 +81,12 @@ struct PipelineKey {
     uint32_t ufloat_colors = 0;  // bit k: colour target k is R11G11B10F (no alpha: destination alpha reads 1)
     uint32_t alpha_to_coverage = 0;  // BindMultisampleState (G7)
     uint32_t restart = 0;  // primitive restart for a strip or fan (SetPrimitiveRestart; nvn_draw.cpp)
-    float uw_x = 0;  // NX_ULTRAWIDE: gl_Position.x scale of the vertex stage (0: none, the module has no constant)
+    float uw_x = 0;       // NX_ULTRAWIDE: gl_Position.x scale of the vertex stage (0: none, the module has no constant)
+    float uw_frag_x = 0;  // NX_ULTRAWIDE: gl_FragCoord.x scale of the fragment stage on widened targets (0: none)
 };
 VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout, bool allow_async = true);
 bool pipeline_workers_busy();
+std::shared_mutex& pipeline_cache_mutex();
 
 // Shared NVN -> Vulkan translation helpers used consistently by static pipeline creation,
 // canonical key deduplication, and dynamic command-buffer state emission.
@@ -122,10 +125,12 @@ inline VkCompareOp effective_depth_compare_op(const DepthStencilInfo& depth) {
     return vk_compare(depth.depth_func);
 }
 inline void effective_stencil_ops(const DepthStencilInfo& depth, uint32_t cull, VkStencilOpState out[2]) {
-    const bool mirror_front = (cull == 0) || (depth.stencil_func[1] == 0) ||
-                              (depth.depth_pass[1] <= 1 && depth.depth_pass[0] > 1);
+    const bool front_dead = depth.stencil_func[0] <= 1 && depth.stencil_func[1] > 1;
+    const bool back_dead = depth.stencil_func[1] <= 1 && depth.stencil_func[0] > 1;
+    const bool mirror_front = !front_dead && (back_dead || (cull == 0) || (depth.stencil_func[1] == 0) ||
+                                              (depth.depth_pass[1] <= 1 && depth.depth_pass[0] > 1));
     for (int f = 0; f < 2; f++) {
-        const int src = mirror_front ? 0 : f;
+        const int src = front_dead ? 1 : (mirror_front ? 0 : f);
         out[f].failOp = vk_stencil_op(depth.stencil_fail[src]);
         out[f].depthFailOp = vk_stencil_op(depth.depth_fail[src]);
         out[f].passOp = vk_stencil_op(depth.depth_pass[src]);
@@ -228,7 +233,7 @@ VkImageView attachment_view(GpuImage& img, uint32_t level, uint32_t layer, VkFor
 // a same-size colour format it can be viewed as.
 VkFormat view_format(const GpuImage& img, uint32_t nvn);
 // Destroys the cached views of an image about to be freed.
-void forget_image_views(const GpuImage& img);
+void forget_image_views(const GpuImage& img, bool keep_default_view);
 uint64_t view_forget_serial();
 // True when sampled_view() would need no transfer or layout change (it can then be called inside a render pass).
 bool sampled_ready(uint64_t texture);

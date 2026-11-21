@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -32,10 +33,10 @@ import java.util.Map;
 public final class PauseActivity extends Activity {
     static { System.loadLibrary("p5r"); }
 
-    static final int RED = Color.rgb(230, 18, 34);
-    static final int YELLOW = Color.WHITE;
-    static final int WHITE = Color.rgb(239, 241, 250);
-    static final int MUTED = Color.rgb(184, 188, 208);
+    static final int RED = P5Theme.P5_RED;
+    static final int YELLOW = P5Theme.ACID_YELLOW;
+    static final int WHITE = P5Theme.PAPER_WHITE;
+    static final int MUTED = P5Theme.MUTED_TEXT;
     static final String MAP_KEY = "NX_GAMEPAD_MAP";
     static final String[] MAP_ACTIONS_ES = {"A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "−", "L3", "R3",
             "D-pad izquierda", "D-pad arriba", "D-pad derecha", "D-pad abajo"};
@@ -175,7 +176,7 @@ public final class PauseActivity extends Activity {
 
     void buildScreen() {
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(Color.argb(218, 5, 5, 8));
+        frame.setBackgroundColor(Color.argb(226, 10, 10, 12));
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(28), dp(18), dp(28), dp(16));
@@ -223,8 +224,8 @@ public final class PauseActivity extends Activity {
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
         settingsPanel.setPadding(dp(22), dp(18), dp(22), dp(14));
         GradientDrawable panelBg = new GradientDrawable();
-        panelBg.setColor(Color.argb(245, 8, 7, 9));
-        panelBg.setCornerRadius(dp(5));
+        panelBg.setColor(P5Theme.INK_SURFACE);
+        panelBg.setCornerRadius(dp(2));
         panelBg.setStroke(dp(2), RED);
         settingsPanel.setBackground(panelBg);
         LinearLayout.LayoutParams panelParams = new LinearLayout.LayoutParams(0,
@@ -318,7 +319,7 @@ public final class PauseActivity extends Activity {
             row.addView(value);
             rows.addView(row, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64)));
             View divider = new View(this);
-            divider.setBackgroundColor(Color.rgb(48, 51, 76));
+            divider.setBackgroundColor(P5Theme.BORDER_SUBTLE);
             rows.addView(divider, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)));
         }
         if (categories[selectedCategory].equals(categories[5])) addGamepadMapperRow(rows);
@@ -600,8 +601,8 @@ public final class PauseActivity extends Activity {
         card.addView(text(Lang.f("ASIGNAR %s", "ASSIGN %s", Lang.t(MAP_ACTIONS_ES[action], MAP_ACTIONS_EN[action])),
                 YELLOW, 21, true));
         card.addView(dialogAccent());
-        TextView prompt = text(t("Pulsa el botón que quieres asignar.\nB o Atrás cancela.",
-                "Press the button to assign.\nB or Back cancels."), WHITE, 17, false);
+        TextView prompt = text(t("Pulsa el botón que quieres asignar.\nAtrás cancela.",
+                "Press the button to assign.\nBack cancels."), WHITE, 17, false);
         prompt.setPadding(0, dp(10), 0, dp(20));
         card.addView(prompt);
         Button cancel = actionButton(t("Cancelar", "Cancel"), false);
@@ -614,8 +615,8 @@ public final class PauseActivity extends Activity {
         dialog.setOnKeyListener(new DialogInterface.OnKeyListener() {
             @Override public boolean onKey(DialogInterface d, int key, KeyEvent event) {
                 if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) return true;
-                if (key == KeyEvent.KEYCODE_BUTTON_B) { dialog.cancel(); return true; }
-                if (key == KeyEvent.KEYCODE_BACK || !isGamepadKey(event, key)) return false;
+                if (key == KeyEvent.KEYCODE_BACK || key == KeyEvent.KEYCODE_ESCAPE) { dialog.cancel(); return true; }
+                if (!isGamepadKey(event, key)) return false;
                 int[] previousMap = map.clone();
                 Map<String, String> previousConfig = new LinkedHashMap<>(config);
                 int captured = canonicalKey(key);
@@ -758,11 +759,42 @@ public final class PauseActivity extends Activity {
         b.setFocusable(true);
         b.setFocusableInTouchMode(true);
         b.setTag(Boolean.valueOf(selected));
-        b.setBackground(new Launcher.MenuPanelDrawable(dp(4), selected));
+        b.setBackground(menuButtonBackground(selected));
         b.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override public void onFocusChange(View view, boolean focused) {
                 boolean active = Boolean.TRUE.equals(b.getTag());
                 styleMenuButton(b, active || focused);
+            }
+        });
+        // Keep D-pad focus for controllers, while making a touchscreen tap activate immediately.
+        // Android's focus-in-touch-mode can otherwise spend the first tap only moving focus on some devices.
+        b.setOnTouchListener(new View.OnTouchListener() {
+            private boolean pressed;
+
+            @Override public boolean onTouch(View view, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        pressed = b.isEnabled();
+                        if (pressed) {
+                            b.requestFocus();
+                            b.setPressed(true);
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        boolean activate = pressed && b.isEnabled()
+                                && event.getX() >= 0 && event.getX() < b.getWidth()
+                                && event.getY() >= 0 && event.getY() < b.getHeight();
+                        pressed = false;
+                        b.setPressed(false);
+                        if (activate) b.performClick();
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        pressed = false;
+                        b.setPressed(false);
+                        return true;
+                    default:
+                        return true;
+                }
             }
         });
         return b;
@@ -770,12 +802,22 @@ public final class PauseActivity extends Activity {
 
     void styleMenuButton(Button button, boolean selected) {
         button.setTextColor(selected ? Color.BLACK : WHITE);
-        button.setBackground(new Launcher.MenuPanelDrawable(dp(4), selected));
+        button.setBackground(menuButtonBackground(selected));
+    }
+
+    android.graphics.drawable.Drawable menuButtonBackground(boolean selected) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(selected ? P5Theme.PAPER_WHITE : P5Theme.INK_ELEVATED);
+        background.setCornerRadius(dp(1));
+        background.setStroke(dp(selected ? 2 : 1), selected ? P5Theme.P5_RED : P5Theme.BORDER_SUBTLE);
+        return background;
     }
 
     void focusFirstSetting() {
         View target = firstOptionButton != null ? firstOptionButton : resumeButton;
-        focusWhenReady(target);
+        // Transfer focus immediately: posting this lets the previously focused header button
+        // (often "Salir") remain highlighted for a frame after an L1/R1 category change.
+        if (!target.requestFocus()) focusWhenReady(target);
     }
 
     void moveVertical(int direction) {

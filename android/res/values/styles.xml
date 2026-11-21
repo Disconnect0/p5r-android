@@ -6,4 +6,12 @@
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowBackground">@android:color/black</item>
     </style>
+
+    <!-- Ink-black edge-to-edge launch theme for P5R Launcher & Importer (eliminates Material grey cold-start flash). -->
+    <style name="P5LauncherTheme" parent="Fullscreen">
+        <item name="android:windowBackground">@color/p5_ink_black</item>
+        <item name="android:colorBackground">@color/p5_ink_black</item>
+        <item name="android:navigationBarColor">@color/p5_ink_black</item>
+        <item name="android:statusBarColor">@color/p5_ink_black</item>
+    </style>
 </resources>

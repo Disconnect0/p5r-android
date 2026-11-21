@@ -37,6 +37,13 @@ void pin_current_thread_to_core(int core_id, const char* thread_name);
 void pin_current_thread_to_little_cores(const char* thread_name);
 void reset_current_thread_affinity(const char* thread_name);
 void set_thread_priority(int priority);
+#if defined(__ANDROID__)
+void pin_thread_tid_to_little_cores(int64_t tid);
+void pin_thread_tid_to_big_cores(int64_t tid, int priority);
+#else
+inline void pin_thread_tid_to_little_cores(int64_t) {}
+inline void pin_thread_tid_to_big_cores(int64_t, int) {}
+#endif
 // Samples the given threads (thread CPU time, 1 kHz) for `seconds`: host pc, a few host frames and the guest lr
 // (read through guest_lr[k], the thread's x30). Writes one line per sample to `path`:
 //   <tid> <guest lr> <module>:<offset> [<module>:<offset> ...]   (host pc first, then callers)

@@ -207,7 +207,9 @@ void log_guest_threads() { dump_threads(); }
 
 void kernel_init() {
     plat::start_thread(watchdog, nullptr, 1ull << 20);
-    if (std::getenv("NX_LOG") || std::getenv("NX_STALL_LOG") || std::getenv("NX_THREAD_DUMP_AT"))
+    const char* en = std::getenv("NX_ENABLE_LOG");
+    const bool log_enabled = !en || (en[0] != '0' && std::strcmp(en, "false") != 0);
+    if ((log_enabled && std::getenv("NX_LOG")) || std::getenv("NX_STALL_LOG") || std::getenv("NX_THREAD_DUMP_AT"))
         plat::start_thread(stall_sampler, nullptr, 1ull << 20);
 }
 

@@ -75,6 +75,7 @@ bool resolve_cache_on();  // NX_RESOLVE_CACHE (nvn_incarnation.cpp)
 bool texture_race_old();
 Object* find_object(uint64_t guest, uint64_t mark);  // under objects_lock (shared)
 void note_replaced(uint64_t guest);                  // under objects_lock (alone): guest's object is about to change
+bool has_incarnations();                             // any retired texture/pool/sampler records pending purge
 void purge_incarnations(uint64_t upto);              // under objects_lock (alone), from drain_objects: records <= upto
 uint64_t current_epoch();                            // the epoch of the last recorded change
 uint64_t replay_floor();                             // the last replay's mark: objects retired up to it can go
@@ -102,8 +103,8 @@ T* get(uint64_t guest) {
             uint64_t guest = 0, serial = 0;
             T* object = nullptr;
         };
-        thread_local Slot table[1024];
-        Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 1023];
+        thread_local Slot table[4096];
+        Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 4095];
         if (s.serial == serial && s.guest == guest) return s.object;
         T* p;
         {
@@ -191,8 +192,7 @@ struct GpuImage;  // the Vulkan side of a texture (nvn_vk.cpp)
 
 struct Texture : Object {
     uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
-    uint32_t width = 0, height = 0, depth = 0, stride = 0;
-    uint32_t guest_width = 0;  // original width before NX_ULTRAWIDE changes the Vulkan render target
+    uint32_t width = 0, guest_width = 0, height = 0, depth = 0, stride = 0;
     uint64_t pool = 0, offset = 0, storage_size = 0;
     uint64_t memory = 0, gpu = 0;
     bool uw = false;  // NX_ULTRAWIDE: a screen-sized render target whose width was widened (nvn_ultrawide.cpp)
@@ -407,6 +407,7 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
 const DeferredValues* current_deferred();  // the submit being replayed
 // nvn_worker.cpp: the replay thread. worker_run queues a job (runs it at once when the thread is off) and returns its
 // serial (0: done); worker_wait waits for a serial; worker_finish for everything queued so far.
+bool worker_enabled();
 uint64_t worker_run(std::function<void()> job);
 void worker_wait(uint64_t serial);
 uint64_t worker_last();
@@ -426,6 +427,7 @@ uint64_t gpu_write_back_serial();  // the last submit that writes guest memory (
 // Programs: the translated stages bound by nvnProgramSetShaders (nvn_program.cpp; ShaderInfo in nvn_shaders.h).
 struct ShaderInfo;
 const std::vector<const ShaderInfo*>* program_shaders(uint64_t program);
+uint64_t program_generation();
 
 // A format's block (width, height in texels; bytes), from the SDK driver's format table (nvn_texture_layout.cpp).
 // NX_DROPOUTS (nvn_state.cpp): the CPU-side frame count, at each nvnQueuePresentTexture.

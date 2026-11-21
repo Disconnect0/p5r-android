@@ -77,6 +77,41 @@ void notify_all() {
 
 KThread* self_thread() { return t_self; }
 
+void repin_guest_workers_to_little_cores(int64_t replay_tid) {
+    static const bool worker_little = [] {
+        const char* e = std::getenv("NX_WORKER_LITTLE");
+        return !(e && e[0] == '0');
+    }();
+    if (!worker_little) return;
+    std::lock_guard al(g_all_lock);
+    for (auto& wk : g_all) {
+        auto t = wk.lock();
+        if (!t || t->exited || t->host_tid <= 0) continue;
+        if (t->host_tid == replay_tid) {
+            t->is_replay = true;
+            continue;
+        }
+        if (t->is_replay) {
+            // When NX_REPLAY_THREAD=1, replay runs on the dedicated host thread (replay_tid is not a KThread);
+            // keep guest submitting thread(s) on m.main_non_replay ({0..6}, priority -6) so they never preempt
+            // `nvn replay` on CPU 7.
+            static const bool async_replay = [] {
+                const char* e = std::getenv("NX_REPLAY_THREAD");
+                return e && e[0] == '1';
+            }();
+            plat::pin_thread_tid_to_big_cores(t->host_tid, async_replay ? -6 : -10);
+            continue;
+        }
+        if (t->id == 0x50) {
+            t->is_replay = false;
+            plat::pin_thread_tid_to_big_cores(t->host_tid, -4);
+            continue;
+        }
+        t->is_replay = false;
+        plat::pin_thread_tid_to_little_cores(t->host_tid);
+    }
+}
+
 uint64_t heap_size() { return g_heap_size; }
 
 CPU& current_cpu() { return t_self->ctx; }
@@ -411,11 +446,11 @@ static void thread_main(void* p) {
     // NOTE: Background worker threads must NOT register with plat::perf_hint_thread() (ADPF),
     // as ADPF has a maximum capacity of 8 thread IDs. Background workers saturated all 8 slots,
     // starving the frame-critical Vulkan Replay and Present threads.
-    if (t->core >= 2 || t->prio >= 44) {
+    if (!t->is_replay) {
         plat::set_thread_priority(0);
         static const bool worker_little = [] {
             const char* e = std::getenv("NX_WORKER_LITTLE");
-            return !(e && e[0] == '0');  // Default true: isolate workers to Little cores 0-5
+            return !(e && e[0] == '0');  // Default true: isolate non-replay guest threads to Little cores 0-5
         }();
         if (worker_little) {
             plat::pin_current_thread_to_little_cores(name);

@@ -34,6 +34,8 @@ extern char** environ;
 
 #include <nx/runtime.h>
 
+#include "kernel.h"
+
 namespace nx::plat {
 
 namespace {
@@ -117,21 +119,44 @@ int affinity_mode() {
     static const int m = [] {
         const char* e = std::getenv("NX_AFFINITY");
         if (e) return std::atoi(e);
-        return 2;  // Default on Android: run on all fast cores (cl > 0, avoiding little/efficiency cluster)
+        return 1;  // Default on Android: role 0 (replay+present) on fastest cluster, role 1 (game main) on mid/fast cluster
     }();
     return m;
 }
 
 void place(int role) {
+    set_thread_priority(role == 0 ? -19 : -4);
     const Cpus& c = cpus();
     int mode = affinity_mode();
     if (!mode || c.clusters < 2) return;
     cpu_set_t set;
     CPU_ZERO(&set);
     int top = c.clusters - 1;
+    int top_count = 0;
+    int last_top_cpu = -1;
+    for (size_t k = 0; k < c.cluster.size(); k++) {
+        if (c.cluster[k] == top) {
+            top_count++;
+            last_top_cpu = int(k);
+        }
+    }
     for (size_t k = 0; k < c.cluster.size(); k++) {
         int cl = c.cluster[k];
-        bool in = mode == 2 ? cl > 0 : role == 0 ? cl == top : (c.clusters > 2 ? cl > 0 && cl < top : cl == top);
+        bool in = false;
+        if (mode == 2) {
+            in = cl > 0;
+        } else if (role == 0) {
+            in = cl == top;
+        } else if (c.clusters > 2) {
+            in = cl > 0 && cl < top;
+        } else if (top_count >= 2) {
+            // On 2-cluster big.LITTLE SoCs (e.g. 6 Little + 2 Big cores), reserve the highest Big core
+            // exclusively for role 0 (replay+present) and let role 1 (game main) run on the other Big core(s)
+            // plus Little cores so game main never preempts replay+present on the dedicated Big core.
+            in = int(k) != last_top_cpu;
+        } else {
+            in = cl == top;
+        }
         if (in) CPU_SET(int(k), &set);
     }
     if (sched_setaffinity(0, sizeof set, &set) == 0) return;
@@ -240,7 +265,10 @@ void request_performance_profile() {
 void frame_thread_tick(int role) {
     Role& r = g_roles[role & 1];
 #if defined(__ANDROID__)
-    if (r.ticks % 60 == 0) place(role);
+    if (r.ticks % 60 == 0) {
+        place(role);
+        if ((role & 1) == 0) nx::repin_guest_workers_to_little_cores(current_thread_id());
+    }
     int cpu = sched_getcpu();
     const Cpus& c = cpus();
     if (cpu >= 0 && size_t(cpu) < c.cluster.size()) r.on[std::min(c.cluster[size_t(cpu)], 3)]++;

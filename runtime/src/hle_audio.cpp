@@ -80,6 +80,9 @@ bool device_open() {
 }
 
 void player() {
+    plat::set_thread_name("audio-out");
+    plat::set_thread_priority(0);
+    plat::pin_current_thread_to_little_cores("audio-out");
     bool device = device_open();
     log("audio: %s", device ? "device output (48 kHz stereo s16)" : "no audio device, timer pacing");
     using clock = std::chrono::steady_clock;

@@ -15,7 +15,6 @@ struct Texture;
 
 float uw_factor();                        // k > 1 when on, 1 when off (decided once)
 inline bool uw_on() { return uw_factor() > 1.0f; }
-bool uw_stretch_ui();                    // NX_UW_STRETCH_UI: use full width instead of centered 16:9 UI
 uint32_t uw_widen(uint32_t w);            // the widened width of a 16:9-chain size
 bool uw_widen_texture(Texture& t);        // a screen-sized render target: width widened, t.uw set
 bool uw_crop(int32_t crop[4]);            // nvnWindowSetCrop's rect widened when it is the whole 16:9 picture
@@ -28,7 +27,13 @@ void uw_scan(uint64_t present);        // NX_UW_SCAN debug
 void uw_ui_vertex_shader(const ShaderInfo* vs);  // learned: drew into a UI layer target
 bool uw_is_ui_vertex_shader(const ShaderInfo* vs);
 bool uw_vs_scaled(const ShaderInfo* vs);  // does this vertex shader's x get scaled by 1/k (world and UI geometry)
+bool uw_stretch_ui();                     // NX_UW_STRETCH_UI=1: stretch 2D UI full-width while keeping 3D Hor+
 // A copy of a vertex module whose gl_Position.x is multiplied by specialization constant 0 (default 1.0).
 bool patch_x_scale(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+// A copy of a fragment module whose BuiltIn FragCoord.x is multiplied by specialization constant 0 (default 1.0).
+bool patch_frag_coord_x(const std::vector<uint32_t>& in, std::vector<uint32_t>& out);
+bool uw_fs_uses_fragcoord(const ShaderInfo* fs);
+void uw_mark_fs_fragcoord(const ShaderInfo* fs);
+bool uw_fs_has_fragcoord(const ShaderInfo* fs);
 
 }  // namespace nx::nvn

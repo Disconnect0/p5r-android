@@ -552,18 +552,31 @@ bool strip_interlock(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
 // whose alpha is not exactly 1 to a quarter; its BC3 art has alphas of 246..254 inside the shapes (the blocks' own
 // endpoints), which came out as dark specks over the battle portraits and the HP/SP digits (PROGRESO 70).
 bool opaque_threshold(const std::vector<uint32_t>& in, float threshold, std::vector<uint32_t>& out) {
-    constexpr uint32_t OpTypeFloatOp = 22, OpConstantOp = 43, OpFOrdGreaterThanEqual = 190;
+    constexpr uint32_t OpExtInstImport = 11, OpExtInst = 12, OpTypeFloatOp = 22, OpConstantOp = 43,
+                       OpFDiv = 136, OpSelect = 169, OpFOrdGreaterThanEqual = 190, GlslFMax = 40;
     if (in.size() < 5) return false;
-    uint32_t float_type = 0, one = 0;
-    size_t one_end = 0;
+    uint32_t float_type = 0, one = 0, glsl_ext = 0, dim_const = 0;
+    size_t one_end = 0, fdiv_at = 0;
     std::vector<size_t> compares;
     for (size_t i = 5; i < in.size();) {
         uint32_t len = in[i] >> 16, op = in[i] & 0xffff;
         if (!len || i + len > in.size()) return false;
+        if (op == OpExtInstImport && len >= 3 && !glsl_ext) {
+            const char* name = reinterpret_cast<const char*>(&in[i + 2]);
+            if (std::strncmp(name, "GLSL.std.450", 12) == 0) glsl_ext = in[i + 1];
+        }
         if (op == OpTypeFloatOp && len == 3 && in[i + 2] == 32) float_type = in[i + 1];
         if (op == OpConstantOp && len == 4 && float_type && in[i + 1] == float_type && in[i + 3] == 0x3f800000u && !one)
             one = in[i + 2], one_end = i + len;
+        if (op == OpFDiv && len == 5 && float_type && one && in[i + 1] == float_type && in[i + 3] == one && !fdiv_at)
+            fdiv_at = i;
         if (op == OpFOrdGreaterThanEqual && len == 5 && one && in[i + 4] == one) compares.push_back(i);
+        // P5R's HUD pass (21835d19dd86fcec) computes (tex.rgb / a) * (a >= 1.0 ? ubo : 0.2475).
+        // When 0 < a < 0.2475 on anti-aliased portrait edges, 0.2475 / a > 1.0 amplifies the 3D background
+        // into bright pink/white 1px halos. Clamping the divisor with FMax(a, 0.2475) caps low-alpha edges
+        // at 1.0x while leaving drop shadows (a = 0.8235) and opaque HUD (a >= 0.9) bit-identical.
+        if (op == OpSelect && len == 6 && float_type && in[i + 1] == float_type && !compares.empty() && !dim_const)
+            dim_const = in[i + 4];
         i += len;
     }
     if (!one || compares.empty()) return false;
@@ -575,6 +588,14 @@ bool opaque_threshold(const std::vector<uint32_t>& in, float threshold, std::vec
     out.insert(out.end(), in.begin() + long(one_end), in.end());
     out[3] = id + 1;
     for (size_t at : compares) out[at + 4 + 4] = id;  // shifted by the 4 words inserted before them
+    if (glsl_ext && fdiv_at && dim_const && fdiv_at >= one_end) {
+        const size_t fdiv_out = fdiv_at + 4;  // shifted by the 4-word OpConstant inserted at one_end
+        const uint32_t clamped_id = out[3]++;
+        const uint32_t div_rhs = out[fdiv_out + 4];
+        out[fdiv_out + 4] = clamped_id;
+        out.insert(out.begin() + long(fdiv_out),
+                   {(7u << 16) | OpExtInst, float_type, clamped_id, glsl_ext, GlslFMax, div_rhs, dim_const});
+    }
     return true;
 }
 
@@ -828,7 +849,7 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     if (fc && s->stage != ShaderStage::Compute && preserve_inf_nan(code, next)) code.swap(next);
     static const bool mali_opt = [] {
         const char* e = std::getenv("NX_MALI_SPIRV_OPT");
-        return !(e && e[0] == '0');
+        return e && e[0] == '1';
     }();
     if (mali_opt && optimize_spirv_mali(code, next)) code.swap(next);
     static const bool early_tests_on = [] {

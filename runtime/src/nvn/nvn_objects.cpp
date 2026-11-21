@@ -70,6 +70,17 @@ MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset) {
 ViewInfo read_view(CPU& c, uint64_t view) {
     ViewInfo v;
     if (!view) return v;
+    struct ViewCacheSlot {
+        bool valid = false;
+        uint64_t r[5] = {};
+        ViewInfo val{};
+    };
+    static thread_local ViewCacheSlot s_view_cache[256];
+    uint64_t r[5] = {ld<uint64_t>(view), ld<uint64_t>(view + 8), ld<uint64_t>(view + 16), ld<uint64_t>(view + 24),
+                     ld<uint64_t>(view + 32)};
+    uint64_t h = r[0] ^ (r[1] * 0x9E3779B97F4A7C15ull) ^ r[2] ^ (r[3] * 0xC2B2AE3D27D4EB4Full) ^ r[4];
+    ViewCacheSlot& slot = s_view_cache[((h >> 32) ^ h) & 255];
+    if (__builtin_expect(slot.valid && std::memcmp(slot.r, r, sizeof r) == 0, 1)) return slot.val;
     uint64_t tmp = scratch(c, 16);
     // Each getter returns whether the view sets that property.
     if (driver(c, "nvnTextureViewGetLevels", {view, tmp, tmp + 4}) & 1)
@@ -80,17 +91,21 @@ ViewInfo read_view(CPU& c, uint64_t view) {
     if (driver(c, "nvnTextureViewGetSwizzle", {view, tmp, tmp + 4, tmp + 8, tmp + 12}) & 1)
         for (int k = 0; k < 4; k++) v.swizzle |= std::min<uint32_t>(ld<uint32_t>(tmp + 4 * k), 5) << (8 * k);
     if (driver(c, "nvnTextureViewGetFormat", {view, tmp}) & 1) v.format = ld<uint32_t>(tmp);
+    slot.valid = true;
+    std::memcpy(slot.r, r, sizeof r);
+    slot.val = v;
     return v;
 }
 
 uint64_t pool_host(const MemoryPool& pool, uint64_t offset) {
     if (pool.memory) return pool.memory + offset;
-    std::lock_guard lk(objects_lock());
+    std::shared_lock lk(objects_lock());
     auto it = pool.mappings.upper_bound(offset);
     if (it == pool.mappings.begin()) return 0;
     --it;
     if (offset - it->first >= it->second.size) return 0;
-    auto* phys = dynamic_cast<MemoryPool*>(objects().count(it->second.physical) ? objects()[it->second.physical].get() : nullptr);
+    auto o = objects().find(it->second.physical);
+    auto* phys = o == objects().end() ? nullptr : dynamic_cast<MemoryPool*>(o->second.get());
     return phys && phys->memory ? phys->memory + it->second.physical_offset + (offset - it->first) : 0;
 }
 
@@ -179,7 +194,7 @@ std::map<uint64_t, std::set<uint64_t>>& pool_textures() {
 // (NVNmemoryPool*, ptrdiff_t offset, size_t size)
 void MemoryPoolFlushMappedRange(CPU& c) {
     uint64_t pool = c.x[0], off = c.x[1], size = c.x[2];
-    std::lock_guard lk(objects_lock());
+    std::shared_lock lk(objects_lock());
     auto it = pool_textures().find(pool);
     if (it == pool_textures().end()) return;
     for (uint64_t guest : it->second) {
@@ -295,7 +310,6 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     t.levels = uint32_t(driver(c, "nvnTextureBuilderGetLevels", {builder}));
     t.samples = uint32_t(driver(c, "nvnTextureBuilderGetSamples", {builder}));
     t.width = uint32_t(driver(c, "nvnTextureBuilderGetWidth", {builder}));
-    t.guest_width = t.width;
     t.height = uint32_t(driver(c, "nvnTextureBuilderGetHeight", {builder}));
     t.depth = uint32_t(driver(c, "nvnTextureBuilderGetDepth", {builder}));
     t.stride = uint32_t(driver(c, "nvnTextureBuilderGetStride", {builder}));
@@ -303,6 +317,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     t.pool = driver(c, "nvnTextureBuilderGetMemoryPool", {builder});
     t.offset = driver(c, "nvnTextureBuilderGetMemoryOffset", {builder});
     t.storage_size = texture_storage_size(c, builder);
+    t.guest_width = t.width;
     uw_widen_texture(t);  // NX_ULTRAWIDE: screen-sized render targets get the display's width
     // NX_TRACE_TEX_CALLER=<w>x<h>: the guest call chain of every texture made at that size (who sizes the targets).
     if (static const char* e = std::getenv("NX_TRACE_TEX_CALLER"); e) {
@@ -361,6 +376,9 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     if (!old) {
         std::lock_guard lk(objects_lock());
         note_replaced(guest);
+        if (auto o = objects().find(guest); o != objects().end())
+            if (auto* prev = dynamic_cast<Texture*>(o->second.get()); prev && prev->image && !prev->image->rendered)
+                prev->image->retired = true;
         keep_for_slots(guest);
         hand_image_to_snapshots(guest);
         pool_textures()[t.pool].insert(guest);
@@ -429,6 +447,8 @@ void expire_kept() {
         if (t && (sampled ? std::max(since, sampled) + 2'000'000'000ull : since + 250'000'000ull) > now) break;
         g_kept_order.pop_front();
         if (!t) continue;
+        note_replaced(key);
+        if (t->image && !t->image->rendered) t->image->retired = true;
         g_registered.erase(key);
         for (auto& [pool, set] : pool_textures()) set.erase(key);
         defer_object(std::move(o->second));
@@ -445,6 +465,9 @@ void TextureFinalize(CPU& c) {
     {
         std::lock_guard lk(objects_lock());
         note_replaced(guest);  // a replay in flight keeps resolving it (#55)
+        if (auto o = objects().find(guest); o != objects().end())
+            if (auto* prev = dynamic_cast<Texture*>(o->second.get()); prev && prev->image && !prev->image->rendered)
+                prev->image->retired = true;
         hand_image_to_snapshots(guest);
         uint64_t kept = keep_for_slots(guest);
         for (auto& [pool, set] : pool_textures()) set.erase(guest);
@@ -537,7 +560,13 @@ void release_kept(uint64_t key) {
         }
     g_registered.erase(key);
     for (auto& [pool, set] : pool_textures()) set.erase(key);
-    if (auto o = objects().find(key); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
+    note_replaced(key);
+    if (auto o = objects().find(key); o != objects().end()) {
+        if (auto* prev = dynamic_cast<Texture*>(o->second.get()); prev && prev->image && !prev->image->rendered)
+            prev->image->retired = true;
+        defer_object(std::move(o->second));
+        objects().erase(o);
+    }
     g_released_kept++;
 }
 
