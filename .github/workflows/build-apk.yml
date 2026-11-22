@@ -51,8 +51,8 @@ jobs:
       - name: Download Shader Translator (libspirvharness.so)
         run: |
           mkdir -p private/build/spirv_harness_android
-          curl -sSL -L "https://github.com/Brandon04Gonzalez/p5r-android/releases/download/v0.4.1/p5r.apk" -o /tmp/p5r_v041.apk
-          unzip -p /tmp/p5r_v041.apk lib/arm64-v8a/libspirvharness.so > private/build/spirv_harness_android/libspirvharness.so
+          curl -sSL -L "https://github.com/Brandon04Gonzalez/p5r-android/releases/download/v0.5.13/p5r.apk" -o /tmp/p5r_v0513.apk
+          unzip -p /tmp/p5r_v0513.apk lib/arm64-v8a/libspirvharness.so > private/build/spirv_harness_android/libspirvharness.so
           chmod +x private/build/spirv_harness_android/libspirvharness.so
 
       - name: Build P5R APK
