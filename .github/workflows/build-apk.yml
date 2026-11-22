@@ -43,7 +43,7 @@ jobs:
 
       - name: Fetch Vulkan Headers
         run: |
-          git clone --depth 1 --branch v1.4.357 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
+          git clone --depth 1 --branch v1.4.368 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
           mkdir -p /tmp/vulkan-headers/Include
           cp -r /tmp/vulkan-headers/include/* /tmp/vulkan-headers/Include/
           echo "VULKAN_SDK=/tmp/vulkan-headers" >> $GITHUB_ENV
