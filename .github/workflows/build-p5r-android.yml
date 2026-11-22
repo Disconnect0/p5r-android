@@ -43,7 +43,7 @@ jobs:
             https://github.com/KhronosGroup/Vulkan-Headers private/third_party/Vulkan-Headers-1.4.357
           mkdir -p private/third_party/ryubing
           curl -fsSL -o private/third_party/ryubing.tar.gz \
-            https://codeberg.org/Software_arch/Ryubing/archive/a82350bb77.tar.gz
+            https://git.ryujinx.app/projects/Ryubing/archive/Canary-1.3.354.tar.gz
           tar -xzf private/third_party/ryubing.tar.gz -C private/third_party/ryubing --strip-components=1
           rm private/third_party/ryubing.tar.gz
 
