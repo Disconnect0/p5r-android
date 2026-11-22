@@ -22,7 +22,7 @@ import time
 ADB = os.path.expandvars(r"%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe")
 SERIAL = os.environ.get("ANDROID_SERIAL", "")  # adb -s; empty: the only device connected
 DEV = ["-s", SERIAL] if SERIAL else []
-PKG = "io.github.p5rrecomp"
+PKG = "io.github.p5r.ae3"
 TOUCH = "/dev/input/event2"
 HERE = os.path.dirname(os.path.abspath(__file__))
 INJECT_LOCAL = os.path.join(HERE, "..", "..", "..", "..", "private", "p5r", "injectbuild", "classes.dex")

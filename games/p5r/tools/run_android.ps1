@@ -13,7 +13,7 @@ $ErrorActionPreference = "Continue"
 $root = Resolve-Path "$PSScriptRoot\..\..\.."
 $adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 $dev = if ($Serial) { @("-s", $Serial) } else { @() }
-$pkg = "io.github.p5rrecomp"
+$pkg = "io.github.p5r.ae3"
 $data = "/storage/emulated/0/Persona 5 Royal"
 $run = "$root\private\p5r\runs\$Name"
 New-Item -ItemType Directory -Force $run | Out-Null
