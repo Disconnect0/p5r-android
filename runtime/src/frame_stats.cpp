@@ -84,7 +84,11 @@ const Cpus& cpus() {
         distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
 
         bool valid_freq = !distinct.empty() && distinct.back() > 0 && distinct.size() > 1;
-        if (valid_freq) {
+        if (n == 10) {
+            // Exynos 2xxx-class default: 4 efficiency, 3 mid, 2 big, 1 prime.
+            x.cluster = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3};
+            x.clusters = 4;
+        } else if (valid_freq) {
             for (long f : freq)
                 x.cluster.push_back(int(std::lower_bound(distinct.begin(), distinct.end(), f) - distinct.begin()));
             x.clusters = int(distinct.size());
@@ -147,6 +151,10 @@ void place(int role) {
             in = cl > 0;
         } else if (role == 0) {
             in = cl == top;
+        } else if (c.cluster.size() == 10 && c.clusters == 4) {
+            // Keep the Exynos prime core isolated for replay/present. Mid and big cores serve
+            // the game/main threads without moving the main thread onto efficiency cores.
+            in = cl == 1 || cl == 2;
         } else if (c.clusters > 2) {
             in = cl > 0 && cl < top;
         } else if (top_count >= 2) {
@@ -222,8 +230,9 @@ void place_fast_cores() {
     if (!mode || c.clusters < 2) return;
     cpu_set_t set;
     CPU_ZERO(&set);
+    int top = c.clusters - 1;
     for (size_t k = 0; k < c.cluster.size(); k++) {
-        if (c.cluster[k] > 0) CPU_SET(int(k), &set);
+        if (mode == 2 ? c.cluster[k] > 0 : c.cluster[k] == top) CPU_SET(int(k), &set);
     }
     sched_setaffinity(0, sizeof set, &set);
 #endif

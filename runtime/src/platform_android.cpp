@@ -157,6 +157,7 @@ namespace {
 struct CpuMasks {
     long num_cores = 0;
     cpu_set_t big{};
+    cpu_set_t replay{};
     cpu_set_t main_non_replay{};
     cpu_set_t little{};
     bool valid = false;
@@ -187,8 +188,21 @@ const CpuMasks& get_cpu_masks() {
             }
         }
         CPU_ZERO(&m.big);
+        CPU_ZERO(&m.replay);
         CPU_ZERO(&m.main_non_replay);
         CPU_ZERO(&m.little);
+        if (n == 10) {
+            // Exynos 2xxx-class default: 4 efficiency, 3 mid, 2 big, 1 prime.
+            for (int i = 0; i < 4; ++i) CPU_SET(i, &m.little);
+            for (int i = 4; i < 9; ++i) {
+                CPU_SET(i, &m.main_non_replay);
+                CPU_SET(i, &m.big);
+            }
+            CPU_SET(9, &m.big);
+            CPU_SET(9, &m.replay);
+            m.valid = true;
+            return m;
+        }
         if (any_freq && max_f > min_f) {
             unsigned long threshold = min_f + (max_f - min_f) / 4;
             int last_big = -1;
@@ -207,14 +221,17 @@ const CpuMasks& get_cpu_masks() {
                     if (big_count >= 2 && i == last_big) continue;
                     CPU_SET(i, &m.main_non_replay);
                 }
+                if (last_big >= 0) CPU_SET(last_big, &m.replay);
                 m.valid = true;
                 return m;
             }
         }
-        // Fallback for 6+2 8-core SoCs if sysfs frequencies are unreadable
+        // Fallback topologies if sysfs frequencies are unreadable.
         CPU_ZERO(&m.big);
+        CPU_ZERO(&m.replay);
         CPU_ZERO(&m.main_non_replay);
         CPU_ZERO(&m.little);
+        // Fallback for 6+2 8-core SoCs.
         for (int i = 0; i < 6; ++i) {
             CPU_SET(i, &m.little);
             CPU_SET(i, &m.main_non_replay);
@@ -222,6 +239,7 @@ const CpuMasks& get_cpu_masks() {
         CPU_SET(6, &m.big);
         CPU_SET(6, &m.main_non_replay);
         CPU_SET(7, &m.big);
+        CPU_SET(7, &m.replay);
         m.valid = true;
         return m;
     }();
@@ -298,7 +316,11 @@ void pin_thread_tid_to_big_cores(int64_t tid, int priority) {
     if (tid <= 0) return;
     const CpuMasks& m = get_cpu_masks();
     if (!m.valid) return;
-    const cpu_set_t* target = (priority > -10 && CPU_COUNT(&m.main_non_replay) > 0) ? &m.main_non_replay : &m.big;
+    const cpu_set_t* target = priority <= -10 && CPU_COUNT(&m.replay) > 0
+        ? &m.replay
+        : priority > -10 && CPU_COUNT(&m.main_non_replay) > 0
+            ? &m.main_non_replay
+            : &m.big;
     (void)sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), target);
     (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), priority);
 }

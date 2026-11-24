@@ -264,7 +264,7 @@ void creation_log(uint64_t frames) {
         g_cache_dirty.store(false, std::memory_order_release);
         std::thread([] {
             plat::set_thread_name("cache-writer");
-            plat::reset_current_thread_affinity("cache-writer");
+            plat::pin_current_thread_to_little_cores("cache-writer");
             plat::set_thread_priority(10);
             pipeline_cache_save();
             g_save_in_flight.store(false, std::memory_order_release);

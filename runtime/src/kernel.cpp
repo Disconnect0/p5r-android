@@ -93,8 +93,7 @@ void repin_guest_workers_to_little_cores(int64_t replay_tid) {
         }
         if (t->is_replay) {
             // When NX_REPLAY_THREAD=1, replay runs on the dedicated host thread (replay_tid is not a KThread);
-            // keep guest submitting thread(s) on m.main_non_replay ({0..6}, priority -6) so they never preempt
-            // `nvn replay` on CPU 7.
+            // keep guest submitting threads on main_non_replay at priority -6 so they do not preempt replay.
             static const bool async_replay = [] {
                 const char* e = std::getenv("NX_REPLAY_THREAD");
                 return e && e[0] == '1';
