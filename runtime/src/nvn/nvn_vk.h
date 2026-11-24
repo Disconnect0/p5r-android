@@ -138,6 +138,8 @@ struct DynamicStateCaps {
 };
 const DynamicStateCaps& vk_dynamic_caps();
 bool is_xclipse();
+bool is_radv();
+bool is_radv_xclipse();
 bool is_mali();
 bool is_adreno();
 bool is_adreno_8xx();

@@ -580,7 +580,8 @@ float default_render_scale() {
                         "Adreno (TM) %d", &adreno);
             if (auto m = name.find("Mali-G"); m != std::string::npos) std::sscanf(name.c_str() + m, "Mali-G%d", &mali);
             if (adreno >= 700 || mali >= 710 || name.find("Immortalis") != std::string::npos ||
-                name.find("Xclipse") != std::string::npos)
+                name.find("Xclipse") != std::string::npos ||
+                p.vendorID == 0x1002 || name.find("RADV") != std::string::npos || name.find("radv") != std::string::npos)
                 s = 1.0f;
             else if (adreno >= 610 || mali >= 76)
                 s = 0.85f;

@@ -158,7 +158,8 @@ bool init() {
     VkPhysicalDeviceProperties props{};
     p_vkGetPhysicalDeviceProperties(g_physical, &props);
     g_device_props = props;
-    if (is_xclipse()) log("nvn/vk: Samsung Xclipse GPU detected (forcing CPU BC texture decode for compatibility)");
+    if (is_xclipse()) log("nvn/vk: Samsung Xclipse GPU detected");
+    if (is_radv()) log("nvn/vk: RADV Vulkan driver detected");
     if (is_mali()) log("nvn/vk: ARM Mali GPU detected");
     if (is_adreno_8xx()) log("nvn/vk: Qualcomm Adreno 8xx GPU detected (disabling chunked submits to avoid battle hang)");
     if (is_powervr()) log("nvn/vk: PowerVR GPU detected (pipelines with an unused colour slot skip the pipeline cache)");
@@ -638,6 +639,22 @@ const VkPhysicalDeviceFeatures& vk_features() { return g_features; }
 const DynamicStateCaps& vk_dynamic_caps() { return g_dyn_caps; }
 bool is_xclipse() {
     return std::strstr(g_device_props.deviceName, "Xclipse") != nullptr || g_device_props.vendorID == 0x144d;
+}
+bool is_radv() {
+    return g_device_props.vendorID == 0x1002 ||
+           std::strstr(g_device_props.deviceName, "RADV") != nullptr ||
+           std::strstr(g_device_props.deviceName, "radv") != nullptr;
+}
+bool is_radv_xclipse() {
+    if (!is_radv()) return false;
+    if (is_xclipse()) return true;
+    static const char* const codenames[] = {
+        "VANGOGHLITE", "TITAN", "MAGELLAN", "ARIEL", "TRITON", "GALILEO", "JUNO",
+    };
+    for (const char* codename : codenames) {
+        if (std::strstr(g_device_props.deviceName, codename) != nullptr) return true;
+    }
+    return false;
 }
 bool is_mali() {
     return std::strstr(g_device_props.deviceName, "Mali") != nullptr ||
