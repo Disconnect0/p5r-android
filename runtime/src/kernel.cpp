@@ -84,7 +84,21 @@ void notify_all() {
 KThread* self_thread() { return t_self; }
 
 #if defined(__ANDROID__)
-static void log_worker_affinity(const char* name, bool worker_little) {
+static void apply_worker_affinity(const char* name, bool worker_little) {
+    const char* cpu_list = std::getenv("NX_WORKER_CPUS");
+    if (cpu_list && *cpu_list) {
+        if (std::strcmp(cpu_list, "auto") == 0) {
+            plat::reset_current_thread_affinity(name);
+        } else if (!plat::pin_current_thread_to_cpu_list(cpu_list, name)) {
+            plat::reset_current_thread_affinity(name);
+        }
+        return;
+    }
+    if (worker_little) plat::pin_current_thread_to_little_cores(name);
+    else plat::reset_current_thread_affinity(name);
+}
+
+static void log_worker_affinity(const char* name, const char* policy) {
     cpu_set_t set;
     CPU_ZERO(&set);
     if (sched_getaffinity(0, sizeof set, &set) != 0) {
@@ -99,16 +113,22 @@ static void log_worker_affinity(const char* name, bool worker_little) {
         allowed += std::to_string(i);
     }
     log("worker affinity: %s policy=%s allowed=%s current_cpu=%d", name,
-        worker_little ? "little" : "scheduler", allowed.c_str(), sched_getcpu());
+        policy, allowed.c_str(), sched_getcpu());
 }
 #endif
 
-void repin_guest_workers_to_little_cores(int64_t replay_tid) {
+void repin_guest_workers_to_selected_cpus(int64_t replay_tid) {
     static const bool worker_little = [] {
         const char* e = std::getenv("NX_WORKER_LITTLE");
         return !(e && e[0] == '0');
     }();
+#if defined(__ANDROID__)
+    const char* cpu_list = std::getenv("NX_WORKER_CPUS");
+    const bool custom = cpu_list && *cpu_list;
+    if (!custom && !worker_little) return;
+#else
     if (!worker_little) return;
+#endif
     std::lock_guard al(g_all_lock);
     for (auto& wk : g_all) {
         auto t = wk.lock();
@@ -133,7 +153,17 @@ void repin_guest_workers_to_little_cores(int64_t replay_tid) {
             continue;
         }
         t->is_replay = false;
+#if defined(__ANDROID__)
+        if (custom) {
+            if (std::strcmp(cpu_list, "auto") == 0) plat::reset_thread_tid_affinity(t->host_tid);
+            else if (!plat::pin_thread_tid_to_cpu_list(t->host_tid, cpu_list))
+                plat::reset_thread_tid_affinity(t->host_tid);
+        } else {
+            plat::pin_thread_tid_to_little_cores(t->host_tid);
+        }
+#else
         plat::pin_thread_tid_to_little_cores(t->host_tid);
+#endif
     }
 }
 
@@ -477,13 +507,17 @@ static void thread_main(void* p) {
             const char* e = std::getenv("NX_WORKER_LITTLE");
             return !(e && e[0] == '0');  // Default true: isolate non-replay guest threads to Little cores 0-5
         }();
+#if defined(__ANDROID__)
+        apply_worker_affinity(name, worker_little);
+        const char* cpu_list = std::getenv("NX_WORKER_CPUS");
+        log_worker_affinity(name, cpu_list && *cpu_list
+                ? cpu_list : worker_little ? "little" : "scheduler");
+#else
         if (worker_little) {
             plat::pin_current_thread_to_little_cores(name);
         } else {
             plat::reset_current_thread_affinity(name);
         }
-#if defined(__ANDROID__)
-        log_worker_affinity(name, worker_little);
 #endif
     }
 

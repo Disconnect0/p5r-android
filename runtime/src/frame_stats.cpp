@@ -276,7 +276,7 @@ void frame_thread_tick(int role) {
 #if defined(__ANDROID__)
     if (r.ticks % 60 == 0) {
         place(role);
-        if ((role & 1) == 0) nx::repin_guest_workers_to_little_cores(current_thread_id());
+        if ((role & 1) == 0) nx::repin_guest_workers_to_selected_cpus(current_thread_id());
     }
     int cpu = sched_getcpu();
     const Cpus& c = cpus();

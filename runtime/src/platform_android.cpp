@@ -163,6 +163,31 @@ struct CpuMasks {
     bool valid = false;
 };
 
+bool parse_cpu_list(const char* list, cpu_set_t& set) {
+    if (!list || !*list) return false;
+    CPU_ZERO(&set);
+    const char* p = list;
+    int count = 0;
+    while (*p) {
+        char* end = nullptr;
+        long first = std::strtol(p, &end, 10);
+        if (end == p || first < 0 || first >= CPU_SETSIZE) return false;
+        long last = first;
+        p = end;
+        if (*p == '-') {
+            ++p;
+            last = std::strtol(p, &end, 10);
+            if (end == p || last < first || last >= CPU_SETSIZE) return false;
+            p = end;
+        }
+        for (long cpu = first; cpu <= last; ++cpu) CPU_SET(int(cpu), &set);
+        ++count;
+        if (!*p) break;
+        if (*p++ != ',' || !*p) return false;
+    }
+    return count > 0;
+}
+
 const CpuMasks& get_cpu_masks() {
     static const CpuMasks masks = [] {
         CpuMasks m{};
@@ -294,6 +319,53 @@ void reset_current_thread_affinity(const char* thread_name) {
     int rc = sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
     if (rc != 0) {
         __android_log_print(ANDROID_LOG_WARN, "p5r", "Failed to reset affinity for thread '%s': errno %d", thread_name, rc);
+    }
+}
+
+bool pin_current_thread_to_cpu_list(const char* cpu_list, const char* thread_name) {
+    cpu_set_t cpuset;
+    if (!parse_cpu_list(cpu_list, cpuset)) {
+        __android_log_print(ANDROID_LOG_WARN, "p5r",
+                            "Invalid CPU list for thread '%s': %s", thread_name, cpu_list ? cpu_list : "(null)");
+        return false;
+    }
+    int rc = sched_setaffinity(0, sizeof(cpuset), &cpuset);
+    if (rc != 0) {
+        __android_log_print(ANDROID_LOG_WARN, "p5r", "Failed to set CPU list for thread '%s': errno %d",
+                            thread_name, errno);
+        return false;
+    }
+    return true;
+}
+
+bool pin_thread_tid_to_cpu_list(int64_t tid, const char* cpu_list) {
+    if (tid <= 0) return false;
+    cpu_set_t cpuset;
+    if (!parse_cpu_list(cpu_list, cpuset)) {
+        __android_log_print(ANDROID_LOG_WARN, "p5r", "Invalid CPU list for thread %lld: %s",
+                            static_cast<long long>(tid), cpu_list ? cpu_list : "(null)");
+        return false;
+    }
+    pid_t thread = static_cast<pid_t>(tid);
+    int rc = sched_setaffinity(thread, sizeof(cpuset), &cpuset);
+    if (rc != 0) {
+        __android_log_print(ANDROID_LOG_WARN, "p5r", "Failed to set CPU list for thread %lld: errno %d",
+                            static_cast<long long>(tid), errno);
+        return false;
+    }
+    (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), 0);
+    return true;
+}
+
+void reset_thread_tid_affinity(int64_t tid) {
+    long num_cores = sysconf(_SC_NPROCESSORS_CONF);
+    if (tid <= 0 || num_cores <= 0) return;
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    for (int i = 0; i < num_cores && i < CPU_SETSIZE; ++i) CPU_SET(i, &cpuset);
+    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpuset), &cpuset) != 0) {
+        __android_log_print(ANDROID_LOG_WARN, "p5r", "Failed to reset affinity for thread %lld: errno %d",
+                            static_cast<long long>(tid), errno);
     }
 }
 
@@ -1465,6 +1537,7 @@ extern "C" void android_main(android_app* app) {
         unsetenv("NX_FXAA");
         unsetenv("NX_COLOR_PROFILE");
         unsetenv("NX_ASYNC_PIPELINES");
+        unsetenv("NX_WORKER_CPUS");
         setenv("NX_WORKER_LITTLE", "0", 1);
         std::ifstream f(g_root + "/config.txt");
         std::string line;

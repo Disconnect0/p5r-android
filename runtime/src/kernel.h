@@ -66,7 +66,7 @@ std::shared_ptr<KObject> handle_get(uint32_t h);
 void handle_close(uint32_t h);
 void notify_all();
 KThread* self_thread();
-void repin_guest_workers_to_little_cores(int64_t replay_tid);
+void repin_guest_workers_to_selected_cpus(int64_t replay_tid);
 void backtrace(CPU& c);
 uint64_t heap_size();  // svcSetHeapSize's current size
 

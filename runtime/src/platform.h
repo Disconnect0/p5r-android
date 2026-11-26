@@ -40,6 +40,9 @@ void set_thread_priority(int priority);
 #if defined(__ANDROID__)
 void pin_thread_tid_to_little_cores(int64_t tid);
 void pin_thread_tid_to_big_cores(int64_t tid, int priority);
+bool pin_current_thread_to_cpu_list(const char* cpu_list, const char* thread_name);
+bool pin_thread_tid_to_cpu_list(int64_t tid, const char* cpu_list);
+void reset_thread_tid_affinity(int64_t tid);
 #else
 inline void pin_thread_tid_to_little_cores(int64_t) {}
 inline void pin_thread_tid_to_big_cores(int64_t, int) {}

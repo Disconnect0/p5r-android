@@ -2,6 +2,7 @@
 // mappings, and the initial static TLS every thread starts with. kernel.cpp dispatches to these.
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 
 #include <nx/game.h>
@@ -75,7 +76,20 @@ uint32_t set_thread_core_mask(uint32_t handle, int32_t ideal, uint64_t mask) {
                 const char* e = std::getenv("NX_WORKER_LITTLE");
                 return !(e && e[0] == '0');
             }();
+#if defined(__ANDROID__)
+            const char* cpu_list = std::getenv("NX_WORKER_CPUS");
+            if (cpu_list && *cpu_list) {
+                if (std::strcmp(cpu_list, "auto") == 0) {
+                    plat::reset_current_thread_affinity("guest-worker");
+                } else if (!plat::pin_current_thread_to_cpu_list(cpu_list, "guest-worker")) {
+                    plat::reset_current_thread_affinity("guest-worker");
+                }
+            } else if (worker_little) {
+                plat::pin_current_thread_to_little_cores("guest-worker");
+            }
+#else
             if (worker_little) plat::pin_current_thread_to_little_cores("guest-worker");
+#endif
         }
     }
     return 0;
