@@ -66,6 +66,12 @@ TextureLayout block_linear_layout(uint32_t width, uint32_t height, uint32_t dept
 
 // Untiles a whole texture (every level of every layer) into linear_out, resized to fit. Returns the levels, or an
 // empty vector if the parameters are invalid or `tiled_size` is smaller than the layout needs (nothing is written).
+// Untiles directly into caller-provided memory (e.g. Vulkan staging).
+std::vector<LinearLevel> deswizzle_texture_into(const uint8_t* tiled, uint64_t tiled_size,
+                                                 const TextureLayout& layout,
+                                                 uint32_t bytes_per_block,
+                                                 uint8_t* linear_out, uint64_t linear_capacity);
+
 std::vector<LinearLevel> deswizzle_texture(const uint8_t* tiled, uint64_t tiled_size, uint32_t width, uint32_t height,
                                            uint32_t depth_or_layers, uint32_t levels, uint32_t block_w,
                                            uint32_t block_h, uint32_t bytes_per_block,

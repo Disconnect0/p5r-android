@@ -48,9 +48,12 @@ void widen_r11g11b10(const uint8_t* src, uint8_t* dst, uint64_t texels) {
     for (uint64_t k = 0; k < texels; k++) {
         uint32_t v;
         std::memcpy(&v, src + k * 4, 4);
-        uint16_t h[4] = {uint16_t((v & 0x7FF) << 4), uint16_t(((v >> 11) & 0x7FF) << 4),
-                         uint16_t(((v >> 22) & 0x3FF) << 5), 0x3C00};
-        std::memcpy(dst + k * 8, h, 8);
+        const uint64_t packed =
+            uint64_t((v & 0x7FF) << 4) |
+            (uint64_t(((v >> 11) & 0x7FF) << 4) << 16) |
+            (uint64_t(((v >> 22) & 0x3FF) << 5) << 32) |
+            (uint64_t(0x3C00) << 48);
+        std::memcpy(dst + k * 8, &packed, 8);
     }
 }
 
@@ -256,12 +259,12 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         log("nvn/vk: pitch-linear ASTC texture %ux%u format %#x: cleared", img.width, img.height, t.format);
         return clear_image(cb, img);
     }
+    Upload u{};
     if (t.stride) {  // pitch-linear: rows as they are
         uint64_t rows = (img.height + bh - 1) / bh;
         VkBufferImageCopy r{};
         r.imageSubresource = {img.aspect, 0, 0, img.layers};
         r.imageExtent = {img.width, img.height, 1};
-        Upload u;
         uint64_t staged = 0;
         if (widen) {  // tightly packed RGBA16F rows; rows past the storage stay zero
             const uint8_t* src = reinterpret_cast<const uint8_t*>(t.memory);
@@ -290,8 +293,24 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
         return;
     }
-    auto levels = deswizzle_texture(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size, img.width,
-                                    img.height, layers, img.levels, bw, bh, bytes, linear, t.block_height_gobs);
+    TextureLayout layout = block_linear_layout(img.width, img.height, layers, img.levels,
+                                               bw, bh, bytes, t.block_height_gobs);
+    const bool direct_upload = !decode && !astc_decoded(t.format) && !widen;
+    std::vector<LinearLevel> levels;
+
+    if (direct_upload) {
+        if (layout.levels.empty() || layout.tiled_size > t.storage_size)
+            return;
+        u = texture_stage(layout.linear_size);
+        if (!u.ptr) return;
+        levels = deswizzle_texture_into(reinterpret_cast<const uint8_t*>(t.memory),
+                                        t.storage_size, layout, bytes,
+                                        u.ptr, layout.linear_size);
+    } else {
+        levels = deswizzle_texture(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size, img.width,
+                                   img.height, layers, img.levels, bw, bh, bytes, linear, t.block_height_gobs);
+    }
+
     if (levels.empty()) {
         log("nvn/vk: texture %ux%u format %#x: could not untile (%llu bytes)", img.width, img.height, t.format,
             (unsigned long long)t.storage_size);
@@ -324,11 +343,15 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
     uint64_t scale = widen ? 2 : 1;
-    Upload u = texture_stage(linear.size() * scale);
-    if (widen)
-        widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
-    else
-        plat::fast_memcpy(u.ptr, linear.data(), linear.size());
+    if (!direct_upload) {
+        u = texture_stage(linear.size() * scale);
+        if (!u.ptr) return;
+        if (widen)
+            widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
+        else
+            plat::fast_memcpy(u.ptr, linear.data(), linear.size());
+    }
+    const uint64_t staged_size = direct_upload ? layout.linear_size : linear.size() * scale;
     for (uint32_t k = 0; k < levels.size(); k++) {
         VkBufferImageCopy r{};
         r.bufferOffset = u.offset + levels[k].offset * scale;
@@ -336,7 +359,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         r.imageExtent = {levels[k].width, levels[k].height, img.view_type == VK_IMAGE_VIEW_TYPE_3D ? layers : 1u};
         copies.push_back(r);
     }
-    if (!copies_fit(t, copies.data(), uint32_t(copies.size()), u.offset, linear.size() * scale, bw, bh, host_bytes))
+    if (!copies_fit(t, copies.data(), uint32_t(copies.size()), u.offset, staged_size, bw, bh, host_bytes))
         return clear_image(cb, img);
     transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(copies.size()),

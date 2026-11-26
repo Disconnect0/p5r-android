@@ -35,10 +35,10 @@ inline void copy16(uint8_t* d, const uint8_t* s) { std::memcpy(d, s, 16); }
 inline void copy_gob(const uint8_t* gob, uint8_t* dst, uint64_t pitch) {
     for (uint32_t y = 0; y < kGobHeight; y++, dst += pitch) {
         const uint8_t* s = gob + row_start(y);
-        copy16(dst, s);
-        copy16(dst + 16, s + 32);
-        copy16(dst + 32, s + 256);
-        copy16(dst + 48, s + 288);
+        std::memcpy(dst, s, 16);
+        std::memcpy(dst + 16, s + 32, 16);
+        std::memcpy(dst + 32, s + 256, 16);
+        std::memcpy(dst + 48, s + 288, 16);
     }
 }
 
@@ -147,24 +147,40 @@ TextureLayout block_linear_layout(uint32_t width, uint32_t height, uint32_t dept
     return t;
 }
 
-std::vector<LinearLevel> deswizzle_texture(const uint8_t* tiled, uint64_t tiled_size, uint32_t width, uint32_t height,
-                                           uint32_t depth_or_layers, uint32_t levels, uint32_t block_w,
-                                           uint32_t block_h, uint32_t bytes_per_block,
-                                           std::vector<uint8_t>& linear_out, uint32_t block_height_gobs0) {
-    TextureLayout t = block_linear_layout(width, height, depth_or_layers, levels, block_w, block_h, bytes_per_block,
-                                          block_height_gobs0);
-    if (!tiled || t.levels.empty() || t.tiled_size > tiled_size) return {};
-    linear_out.resize(t.linear_size);
-    // Level-major output (all layers of level 0, then of level 1, ...) while the source is layer-major: each
-    // (level, layer) is still one contiguous source range, so the order of the walk does not matter for reads.
+std::vector<LinearLevel> deswizzle_texture_into(const uint8_t* tiled, uint64_t tiled_size,
+                                                    const TextureLayout& t, uint32_t bytes_per_block,
+                                                    uint8_t* linear_out, uint64_t linear_capacity) {
+    if (!tiled || !linear_out || t.levels.empty() ||
+        t.tiled_size > tiled_size || t.linear_size > linear_capacity)
+        return {};
+
     for (const LinearLevel& l : t.levels) {
         for (uint32_t layer = 0; layer < t.layers; layer++) {
             deswizzle_block_linear(tiled + layer * t.tiled_layer_stride + l.tiled_offset,
-                                   linear_out.data() + l.offset + layer * l.layer_size, l.width_blocks,
-                                   l.height_blocks, 1, bytes_per_block, l.block_height_gobs, 1);
+                                   linear_out + l.offset + layer * l.layer_size,
+                                   l.width_blocks, l.height_blocks, 1,
+                                   bytes_per_block, l.block_height_gobs, 1);
         }
     }
     return t.levels;
+}
+
+std::vector<LinearLevel> deswizzle_texture(const uint8_t* tiled, uint64_t tiled_size,
+                                           uint32_t width, uint32_t height,
+                                           uint32_t depth_or_layers, uint32_t levels,
+                                           uint32_t block_w, uint32_t block_h,
+                                           uint32_t bytes_per_block,
+                                           std::vector<uint8_t>& linear_out,
+                                           uint32_t block_height_gobs0) {
+    TextureLayout t = block_linear_layout(width, height, depth_or_layers, levels,
+                                          block_w, block_h, bytes_per_block,
+                                          block_height_gobs0);
+    if (!tiled || t.levels.empty() || t.tiled_size > tiled_size)
+        return {};
+
+    linear_out.resize(t.linear_size);
+    return deswizzle_texture_into(tiled, tiled_size, t, bytes_per_block,
+                                  linear_out.data(), linear_out.size());
 }
 
 }  // namespace nx::nvn
