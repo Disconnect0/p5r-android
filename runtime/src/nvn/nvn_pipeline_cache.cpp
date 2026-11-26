@@ -28,7 +28,8 @@ bool g_tried = false;
 size_t g_saved_size = 0;
 std::string g_path;
 uint64_t g_alias = 0, g_modules = 0, g_module_ns = 0, g_astc = 0, g_astc_ns = 0;
-std::atomic<uint64_t> g_pipelines{0}, g_pipeline_ns{0}, g_worker_pipelines{0}, g_worker_ns{0};  // also counted from the compile worker threads
+std::atomic<uint64_t> g_pipelines{0}, g_pipeline_ns{0}, g_worker_pipelines{0}, g_worker_ns{0};
+std::atomic<uint64_t> g_bc{0}, g_bc_ns{0}, g_bc_bytes{0};  // also counted from the compile worker threads
 uint64_t g_waited = 0, g_waited_ns = 0, g_skipped = 0, g_prewarmed = 0;
 std::mutex g_warm_lock;
 std::mutex g_disk_lock;
@@ -236,13 +237,16 @@ void warm_save() {
 void note_pipeline_alias() { g_alias++; }
 void note_module_created(uint64_t ns) { g_modules++, g_module_ns += ns; }
 void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
+void note_bc_decoded(uint64_t ns, uint64_t bytes) { g_bc.fetch_add(1, std::memory_order_relaxed); g_bc_ns.fetch_add(ns, std::memory_order_relaxed); g_bc_bytes.fetch_add(bytes, std::memory_order_relaxed); }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {
-    if (g_pipelines || g_astc)
-        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms)",
+    if (g_pipelines || g_astc || g_bc.load())
+        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms), %llu BC decodes (%.1f ms, %.1f MB)",
             (unsigned long long)frames, (unsigned long long)g_pipelines.load(), double(g_pipeline_ns.load()) / 1e6,
-            (unsigned long long)g_astc, double(g_astc_ns) / 1e6);
+            (unsigned long long)g_astc, double(g_astc_ns) / 1e6,
+            (unsigned long long)g_bc.load(), double(g_bc_ns.load()) / 1e6,
+            double(g_bc_bytes.load()) / 1e6);
     if (g_alias || g_modules)
         log("nvn/vk: over %llu frames: %llu raw keys shared an existing pipeline, %llu shader modules (%.1f ms)",
             (unsigned long long)frames, (unsigned long long)g_alias, (unsigned long long)g_modules, double(g_module_ns) / 1e6);
@@ -255,6 +259,7 @@ void creation_log(uint64_t frames) {
     g_worker_pipelines = 0, g_worker_ns = 0;
     g_prewarmed = g_waited = g_waited_ns = g_skipped = 0;
     g_pipelines = 0, g_pipeline_ns = 0, g_astc = g_astc_ns = 0;
+    g_bc = 0, g_bc_ns = 0, g_bc_bytes = 0;
     static uint64_t last_save_ns = 0;
     const uint64_t now_ns = plat::monotonic_ns();
     if (g_cache && g_cache_dirty.load(std::memory_order_acquire) && !pipeline_workers_busy() &&

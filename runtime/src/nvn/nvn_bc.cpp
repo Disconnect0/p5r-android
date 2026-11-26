@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "nvn_vk.h"
+#include "platform.h"
 
 namespace nx::nvn {
 
@@ -235,6 +236,7 @@ uint32_t bc_decoded_bytes(uint32_t nvn_format) {
 
 void bc_decode(uint32_t nvn_format, const uint8_t* blocks, uint32_t width, uint32_t height, uint32_t slices,
                uint8_t* out) {
+    const uint64_t t0 = plat::monotonic_ns();
     Kind k = kind(nvn_format);
     uint32_t bytes = bc_decoded_bytes(nvn_format), bw = (width + 3) / 4, bh = (height + 3) / 4;
     uint32_t block_size = k == kBc1 || k == kBc1a || k == kBc4 || k == kBc4s ? 8 : 16;
@@ -283,6 +285,8 @@ void bc_decode(uint32_t nvn_format, const uint8_t* blocks, uint32_t width, uint3
                     }
                 }
             }
+    const uint64_t decoded_bytes = uint64_t(width) * height * slices * bytes;
+    note_bc_decoded(plat::monotonic_ns() - t0, decoded_bytes);
 }
 
 }  // namespace nx::nvn
