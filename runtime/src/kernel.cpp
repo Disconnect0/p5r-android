@@ -2,6 +2,7 @@
 // memory and GetInfo. Services (IPC) live in ipc.cpp.
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -10,9 +11,14 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <sched.h>
+#endif
 
 #include <nx/game.h>
 
@@ -76,6 +82,26 @@ void notify_all() {
 }
 
 KThread* self_thread() { return t_self; }
+
+#if defined(__ANDROID__)
+static void log_worker_affinity(const char* name, bool worker_little) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof set, &set) != 0) {
+        log("worker affinity: %s sched_getaffinity failed: errno %d", name, errno);
+        return;
+    }
+
+    std::string allowed;
+    for (int i = 0; i < CPU_SETSIZE; ++i) {
+        if (!CPU_ISSET(i, &set)) continue;
+        if (!allowed.empty()) allowed += ',';
+        allowed += std::to_string(i);
+    }
+    log("worker affinity: %s policy=%s allowed=%s current_cpu=%d", name,
+        worker_little ? "little" : "scheduler", allowed.c_str(), sched_getcpu());
+}
+#endif
 
 void repin_guest_workers_to_little_cores(int64_t replay_tid) {
     static const bool worker_little = [] {
@@ -456,6 +482,9 @@ static void thread_main(void* p) {
         } else {
             plat::reset_current_thread_affinity(name);
         }
+#if defined(__ANDROID__)
+        log_worker_affinity(name, worker_little);
+#endif
     }
 
     call(t->ctx, t->entry);
