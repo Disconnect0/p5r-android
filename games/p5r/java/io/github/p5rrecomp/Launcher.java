@@ -1214,7 +1214,7 @@ public class Launcher extends Activity {
             if (tab == TAB_PERFORMANCE && "NX_REPLAY_THREAD".equals(o.key)) {
                 workerCpuList = list;
                 workerCpuInsertIndex = list.getChildCount();
-                addWorkerCpuRows(curSub);
+                rebuildWorkerCpuRows();
             }
         }
         tabLists[tab] = list;
