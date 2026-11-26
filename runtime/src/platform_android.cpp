@@ -1465,6 +1465,7 @@ extern "C" void android_main(android_app* app) {
         unsetenv("NX_FXAA");
         unsetenv("NX_COLOR_PROFILE");
         unsetenv("NX_ASYNC_PIPELINES");
+        setenv("NX_WORKER_LITTLE", "0", 1);
         std::ifstream f(g_root + "/config.txt");
         std::string line;
         while (std::getline(f, line)) {

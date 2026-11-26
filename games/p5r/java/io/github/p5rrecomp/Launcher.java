@@ -753,6 +753,13 @@ public class Launcher extends Activity {
                 new String[] {"0", "1"},
                 new String[] {"NO", "SÍ"},
                 new String[] {"OFF", "ON"}, 0, false));
+        options.add(new Option(TAB_PERFORMANCE, "NX_WORKER_LITTLE",
+                "Afinidad de hilos worker", "Worker Thread Affinity",
+                "Desactivado deja al sistema elegir los núcleos; activado limita los workers a los núcleos eficientes",
+                "Off lets Android schedule workers on any allowed CPU; on pins them to efficiency cores",
+                new String[] {"0", "1"},
+                new String[] {"NO", "SÍ"},
+                new String[] {"OFF", "ON"}, 0, false));
         options.add(new Option(TAB_PERFORMANCE, "NX_ASYNC_PIPELINES",
                 "Compilación de shaders", "Shader Compilation",
                 "Asíncrono evita tirones; Síncrono evita texturas blancas al entrar a zonas nuevas",
