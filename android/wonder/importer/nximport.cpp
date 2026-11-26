@@ -1480,7 +1480,8 @@ struct GameImage::Impl {
             base->file->read(s.off + pos, dst, n);
             return;
         }
-        std::vector<uint8_t> buf;
+        // Reuse the RomFS decryption buffer per thread; concurrent reads remain isolated.
+        thread_local std::vector<uint8_t> buf;
         ctr_read(base->file.get(), s.off + pos, s.off + pos, base->key, s.upper, dst, n, buf);
     }
 };
