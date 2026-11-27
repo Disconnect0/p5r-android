@@ -544,6 +544,12 @@ static SlotBufferCache s_addr_ubo_cache[kAddrUboCacheSlots];
 static uint64_t s_addr_ubo_valid_words[kAddrUboCacheSlots / 64] = {};
 static uint32_t s_addr_ubo_group_mask = 0;
 static uint64_t s_addr_ubo_page_bloom = 0;
+static uint64_t s_addr_ubo_guest_bloom = 0;
+
+inline uint64_t ubo_guest_bloom_bit(uint64_t address) {
+    const uint64_t pg = address >> 16;
+    return 1ull << ((pg ^ (pg >> 6)) & 63);
+}
 
 inline uint64_t ubo_bloom_bit(const uint8_t* p) {
     const uintptr_t pg = reinterpret_cast<uintptr_t>(p) >> 16;
@@ -925,6 +931,7 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     const uint64_t max_pad = pad_min(0x10000);
                     const uint64_t want_min = max_pad == 16 ? 16 : pad_min((b.set == 0 && b.binding < 64 && ((s->masks_known ? s->dynamic_uniforms : dynamic_uniform_bindings(s)) >> b.binding & 1)) ? 0x10000 : 0x1000);
                     const size_t ac_base = ((r.address >> 4) ^ (r.address >> 12)) & (kAddrUboCacheSlots - 1);
+                    const uint8_t* p = nullptr;
                     if (shared && st < 2 && b.nvn.index >= 0 && b.nvn.index < 18 && r.address) {
                         SlotBufferCache& slot = s_ubo_cache[st][b.nvn.index];
                         if (slot.address == r.address && slot.size == r.size && slot.min_size == want_min &&
@@ -933,20 +940,22 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                             break;
                         }
                         bool addr_hit = false;
-                        for (size_t step = 0; step < 4; step++) {
-                            const SlotBufferCache& ac = s_addr_ubo_cache[(ac_base + step) & (kAddrUboCacheSlots - 1)];
-                            if (ac.address == r.address && ac.size == r.size && ac.min_size == want_min &&
-                                ac.gen == cur_gen) {
-                                info = ac.info;
-                                slot = ac;
-                                if (ac.host_p) s_ubo_valid_mask[st] |= (1u << b.nvn.index);
-                                addr_hit = true;
-                                break;
+                        if (s_addr_ubo_guest_bloom & ubo_guest_bloom_bit(r.address)) {
+                            for (size_t step = 0; step < 4; step++) {
+                                const SlotBufferCache& ac = s_addr_ubo_cache[(ac_base + step) & (kAddrUboCacheSlots - 1)];
+                                if (ac.address == r.address && ac.size == r.size && ac.min_size == want_min &&
+                                    ac.gen == cur_gen) {
+                                    info = ac.info;
+                                    slot = ac;
+                                    if (ac.host_p) s_ubo_valid_mask[st] |= (1u << b.nvn.index);
+                                    addr_hit = true;
+                                    break;
+                                }
                             }
                         }
                         if (addr_hit) break;
                     }
-                    const uint8_t* p = r.address ? guest_bytes(r.address) : nullptr;
+                    if (!p) p = r.address ? guest_bytes(r.address) : nullptr;
                     // Reads past the bound size return 0 on Maxwell and garbage on Metal (a UI shader read c3[10]
                     // of a 0x90-byte block and wrote Inf): the bound data goes in a zero-padded 4 KB at least.
                     // Banks the shader indexes with a computed value (clamped to 64 KB, nvn_spirv_patch.cpp): all
@@ -989,6 +998,7 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                         const size_t w = put_idx >> 6;
                         s_addr_ubo_valid_words[w] |= 1ull << (put_idx & 63);
                         s_addr_ubo_group_mask |= 1u << w;
+                        s_addr_ubo_guest_bloom |= ubo_guest_bloom_bit(r.address);
                         if ((reinterpret_cast<uintptr_t>(p) >> 16) == ((reinterpret_cast<uintptr_t>(p + copy_sz) - 1) >> 16))
                             s_addr_ubo_page_bloom |= ubo_bloom_bit(p);
                         else
@@ -1254,11 +1264,12 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
             continue;
         }
         if (k == 0) {
-            need[0] = (b.sets[0] != d.sets[0] || b.dynamic_count != noff0 ||
-                       std::memcmp(b.dynamic_offsets, offsets, noff0 * sizeof(uint32_t)) != 0);
+            need[0] = b.sets[0] != d.sets[0] || b.dynamic_count != noff0 ||
+                      (noff0 && std::memcmp(b.dynamic_offsets, offsets, noff0 * sizeof(uint32_t)) != 0);
         } else if (k == 1) {
-            need[1] = (b.sets[1] != d.sets[1] || b.dynamic_ssbo_count != noff1 ||
-                       std::memcmp(b.dynamic_ssbo_offsets, offsets + noff0, noff1 * sizeof(uint32_t)) != 0);
+            need[1] = b.sets[1] != d.sets[1] || b.dynamic_ssbo_count != noff1 ||
+                      (noff1 && std::memcmp(b.dynamic_ssbo_offsets, offsets + noff0,
+                                            noff1 * sizeof(uint32_t)) != 0);
         } else {
             need[k] = (b.sets[k] != d.sets[k]);
         }
