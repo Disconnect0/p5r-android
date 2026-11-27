@@ -234,7 +234,8 @@ bool on() {
 
 uint64_t budget() {
     if (!g_budget) {
-        long mb = std::getenv("NX_BUFFER_CACHE_MB") ? std::atol(std::getenv("NX_BUFFER_CACHE_MB")) : 64;
+        const long def_mb = is_high_ram_device() ? 256l : 64l;
+        long mb = std::getenv("NX_BUFFER_CACHE_MB") ? std::atol(std::getenv("NX_BUFFER_CACHE_MB")) : def_mb;
         g_budget = uint64_t(std::clamp(mb, 16l, 1024l)) << 20;
     }
     return g_budget;

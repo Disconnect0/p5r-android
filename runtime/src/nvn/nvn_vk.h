@@ -145,6 +145,7 @@ bool is_adreno();
 bool is_adreno_8xx();
 bool is_powervr();
 bool gpu_require_subgroup32();  // compute pipelines pin the subgroup size to 32 (nvn_pipeline.cpp)
+bool is_high_ram_device();      // >= 10 GB system RAM
 bool gpu_is_integrated();  // the device in use is an integrated GPU (set when the device is made)
 VkPhysicalDevice vk_physical();
 // What the device offers for a GPU-side video picture (nvn_caps.cpp, filled in when the device is made): the Android

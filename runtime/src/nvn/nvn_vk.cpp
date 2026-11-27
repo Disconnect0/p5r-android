@@ -678,6 +678,19 @@ bool is_adreno_8xx() {
 }
 bool gpu_is_integrated() { return g_integrated; }
 bool gpu_require_subgroup32() { return g_require_sg32; }
+bool is_high_ram_device() {
+    static const bool high = [] {
+#if defined(_WIN32)
+        return true;
+#else
+        long pages = sysconf(_SC_PHYS_PAGES);
+        long psize = sysconf(_SC_PAGE_SIZE);
+        if (pages <= 0 || psize <= 0) return false;
+        return uint64_t(pages) * uint64_t(psize) >= (10ull << 30);
+#endif
+    }();
+    return high;
+}
 
 uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags want) {
     for (uint32_t k = 0; k < g_memory.memoryTypeCount; k++)
