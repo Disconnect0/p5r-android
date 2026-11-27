@@ -337,6 +337,7 @@ final class P5Views {
 
         void setText(String t) {
             this.text = t == null ? "" : t;
+            requestLayout();
             invalidate();
         }
 

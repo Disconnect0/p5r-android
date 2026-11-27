@@ -188,89 +188,130 @@ bool parse_cpu_list(const char* list, cpu_set_t& set) {
     return count > 0;
 }
 
+bool probe_cpu_metric(int n, const char* suffix, std::vector<long>& out) {
+    out.assign(size_t(n), 0);
+    bool all_ok = n > 0;
+    long min_v = ~0l, max_v = 0;
+    for (int i = 0; i < n; ++i) {
+        char path[96];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/%s", i, suffix);
+        long v = 0;
+        if (FILE* f = std::fopen(path, "r")) {
+            if (std::fscanf(f, "%ld", &v) != 1 || v <= 0) v = 0;
+            std::fclose(f);
+        }
+        out[size_t(i)] = v;
+        if (v <= 0) {
+            all_ok = false;
+        } else {
+            min_v = std::min(min_v, v);
+            max_v = std::max(max_v, v);
+        }
+    }
+    return all_ok && max_v > min_v;
+}
+
 const CpuMasks& get_cpu_masks() {
     static const CpuMasks masks = [] {
         CpuMasks m{};
         m.num_cores = sysconf(_SC_NPROCESSORS_CONF);
         if (m.num_cores < 8) return m;
-        int n = int(std::min<long>(m.num_cores, CPU_SETSIZE));
-        unsigned long freqs[CPU_SETSIZE] = {};
-        unsigned long min_f = ~0ul, max_f = 0;
-        bool any_freq = false;
+        const CpuTopology& t = cpu_topology();
+        int n = int(std::min<size_t>(t.cluster.size(), CPU_SETSIZE));
+        if (n < 8 || t.clusters < 2) return m;
+
+        CPU_ZERO(&m.big);
+        CPU_ZERO(&m.replay);
+        CPU_ZERO(&m.main_non_replay);
+        CPU_ZERO(&m.little);
+
+        int top = t.clusters - 1;
+        int top_count = 0;
+        int last_top_cpu = -1;
         for (int i = 0; i < n; ++i) {
-            char path[96];
-            std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
-            FILE* f = std::fopen(path, "r");
-            if (f) {
-                unsigned long khz = 0;
-                if (std::fscanf(f, "%lu", &khz) == 1 && khz > 0) {
-                    freqs[i] = khz;
-                    min_f = std::min(min_f, khz);
-                    max_f = std::max(max_f, khz);
-                    any_freq = true;
-                }
-                std::fclose(f);
+            if (t.cluster[size_t(i)] == top) {
+                ++top_count;
+                last_top_cpu = i;
             }
         }
-        CPU_ZERO(&m.big);
-        CPU_ZERO(&m.replay);
-        CPU_ZERO(&m.main_non_replay);
-        CPU_ZERO(&m.little);
-        if (n == 10) {
-            // Exynos 2xxx-class default: 4 efficiency, 3 mid, 2 big, 1 prime.
-            for (int i = 0; i < 4; ++i) CPU_SET(i, &m.little);
-            for (int i = 4; i < 9; ++i) {
+
+        for (int i = 0; i < n; ++i) {
+            int cl = t.cluster[size_t(i)];
+            if (cl == 0) CPU_SET(i, &m.little);
+            else CPU_SET(i, &m.big);
+
+            if (top_count >= 2) {
+                if (i == last_top_cpu) continue;
+                if (t.clusters > 2 && cl == 0) continue;
                 CPU_SET(i, &m.main_non_replay);
-                CPU_SET(i, &m.big);
-            }
-            CPU_SET(9, &m.big);
-            CPU_SET(9, &m.replay);
-            m.valid = true;
-            return m;
-        }
-        if (any_freq && max_f > min_f) {
-            unsigned long threshold = min_f + (max_f - min_f) / 4;
-            int last_big = -1;
-            int big_count = 0;
-            for (int i = 0; i < n; ++i) {
-                if (freqs[i] > threshold) {
-                    CPU_SET(i, &m.big);
-                    last_big = i;
-                    big_count++;
-                } else {
-                    CPU_SET(i, &m.little);
-                }
-            }
-            if (CPU_COUNT(&m.big) > 0 && CPU_COUNT(&m.little) > 0) {
-                for (int i = 0; i < n; ++i) {
-                    if (big_count >= 2 && i == last_big) continue;
-                    CPU_SET(i, &m.main_non_replay);
-                }
-                if (last_big >= 0) CPU_SET(last_big, &m.replay);
-                m.valid = true;
-                return m;
+            } else if (t.clusters > 2) {
+                if (cl > 0 && cl < top) CPU_SET(i, &m.main_non_replay);
+            } else if (cl == 0) {
+                CPU_SET(i, &m.main_non_replay);
             }
         }
-        // Fallback topologies if sysfs frequencies are unreadable.
-        CPU_ZERO(&m.big);
-        CPU_ZERO(&m.replay);
-        CPU_ZERO(&m.main_non_replay);
-        CPU_ZERO(&m.little);
-        // Fallback for 6+2 8-core SoCs.
-        for (int i = 0; i < 6; ++i) {
-            CPU_SET(i, &m.little);
-            CPU_SET(i, &m.main_non_replay);
-        }
-        CPU_SET(6, &m.big);
-        CPU_SET(6, &m.main_non_replay);
-        CPU_SET(7, &m.big);
-        CPU_SET(7, &m.replay);
-        m.valid = true;
+        if (last_top_cpu >= 0) CPU_SET(last_top_cpu, &m.replay);
+        m.valid = CPU_COUNT(&m.big) > 0 && CPU_COUNT(&m.little) > 0;
         return m;
     }();
     return masks;
 }
 }  // namespace
+
+const CpuTopology& cpu_topology() {
+    static const CpuTopology topo = [] {
+        CpuTopology t;
+        long n_conf = sysconf(_SC_NPROCESSORS_CONF);
+        if (n_conf <= 0) return t;
+        int n = int(std::min<long>(n_conf, CPU_SETSIZE));
+
+        std::vector<long> metrics;
+        bool valid = probe_cpu_metric(n, "cpufreq/cpuinfo_max_freq", t.freq_khz);
+        if (valid) {
+            metrics = t.freq_khz;
+        } else {
+            valid = probe_cpu_metric(n, "cpu_capacity", metrics)
+                 || probe_cpu_metric(n, "cpufreq/scaling_max_freq", metrics);
+        }
+
+        if (valid) {
+            std::vector<long> distinct = metrics;
+            std::sort(distinct.begin(), distinct.end());
+            distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+            t.cluster.reserve(size_t(n));
+            for (long v : metrics) {
+                t.cluster.push_back(int(std::lower_bound(distinct.begin(), distinct.end(), v) - distinct.begin()));
+            }
+            t.clusters = int(distinct.size());
+        } else if (n >= 4) {
+            // SELinux blocked sysfs (or offline cores): fall back to common ARM big.LITTLE / DynamIQ topologies.
+            if (n == 8) {
+                t.cluster = {0, 0, 0, 0, 0, 0, 1, 1};
+                t.clusters = 2;
+            } else if (n == 10) {
+                t.cluster = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3};
+                t.clusters = 4;
+            } else {
+                for (int k = 0; k < n; ++k) t.cluster.push_back(k < n / 2 ? 0 : 1);
+                t.clusters = 2;
+            }
+            nx::log("threads: cpufreq blocked by SELinux; using fallback topology for %d CPUs (%d clusters)",
+                    n, t.clusters);
+        } else {
+            t.clusters = 1;
+            t.cluster.assign(size_t(n), 0);
+        }
+
+        std::string desc;
+        for (int k = 0; k < n; ++k) {
+            long mhz = size_t(k) < t.freq_khz.size() ? t.freq_khz[size_t(k)] / 1000 : 0;
+            desc += (k ? " " : "") + std::to_string(mhz) + "/" + std::to_string(t.cluster[size_t(k)]);
+        }
+        nx::log("threads: %d CPUs, MHz/cluster: %s", n, desc.c_str());
+        return t;
+    }();
+    return topo;
+}
 
 void pin_current_thread_to_big_cores(const char* thread_name) {
     const CpuMasks& m = get_cpu_masks();
@@ -393,7 +434,9 @@ void pin_thread_tid_to_big_cores(int64_t tid, int priority) {
         : priority > -10 && CPU_COUNT(&m.main_non_replay) > 0
             ? &m.main_non_replay
             : &m.big;
-    (void)sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), target);
+    if (sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), target) != 0 && target != &m.big) {
+        (void)sched_setaffinity(static_cast<pid_t>(tid), sizeof(cpu_set_t), &m.big);
+    }
     (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), priority);
 }
 

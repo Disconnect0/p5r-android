@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace nx::plat {
 
@@ -38,6 +39,12 @@ void pin_current_thread_to_little_cores(const char* thread_name);
 void reset_current_thread_affinity(const char* thread_name);
 void set_thread_priority(int priority);
 #if defined(__ANDROID__)
+struct CpuTopology {
+    std::vector<int> cluster;   // tier per CPU (0 = slowest)
+    std::vector<long> freq_khz; // max freq in kHz if readable, else 0
+    int clusters = 0;
+};
+const CpuTopology& cpu_topology();
 void pin_thread_tid_to_little_cores(int64_t tid);
 void pin_thread_tid_to_big_cores(int64_t tid, int priority);
 bool pin_current_thread_to_cpu_list(const char* cpu_list, const char* thread_name);

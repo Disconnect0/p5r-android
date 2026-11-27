@@ -72,10 +72,8 @@ uint32_t set_thread_core_mask(uint32_t handle, int32_t ideal, uint64_t mask) {
         t->core = ideal;
         if (t.get() == self_thread() && t->id != 0x50 && !t->is_replay) {
             plat::set_thread_priority(0);
-            static const bool worker_little = [] {
-                const char* e = std::getenv("NX_WORKER_LITTLE");
-                return !(e && e[0] == '0');
-            }();
+            const char* little_env = std::getenv("NX_WORKER_LITTLE");
+            const bool worker_little = !(little_env && little_env[0] == '0');
 #if defined(__ANDROID__)
             const char* cpu_list = std::getenv("NX_WORKER_CPUS");
             if (cpu_list && *cpu_list) {

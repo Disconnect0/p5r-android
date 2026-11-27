@@ -117,9 +117,15 @@ public class Launcher extends Activity {
     private final List<CpuGroup> workerCpuGroups = new ArrayList<>();
     private final Set<Integer> workerCpuSelection = new HashSet<>();
     private final List<View> workerCpuRows = new ArrayList<>();
+    private final List<View> workerCpuChildRows = new ArrayList<>();
     private final Map<String, P5Views.SegmentedControl> workerCpuControls = new LinkedHashMap<>();
     private LinearLayout workerCpuList;
     private int workerCpuInsertIndex = -1;
+    private P5Views.SlashButton workerCpuToggleBtn;
+    private TextView workerCpuSummaryView;
+    private boolean workerCpuExpanded = false;
+    private boolean workerCpuGroupsComplete = false;
+    private boolean workerCpuSelectionEdited = false;
 
     private FrameLayout rootFrame;
     private P5BackgroundView bgView;
@@ -1578,22 +1584,36 @@ public class Launcher extends Activity {
     }
 
     private List<CpuGroup> detectWorkerCpuGroups() {
+        workerCpuGroupsComplete = false;
+        List<Integer> present = readCpuList("/sys/devices/system/cpu/present");
+        if (present == null || present.isEmpty()) present = readCpuList("/sys/devices/system/cpu/possible");
         List<Integer> online = readCpuList("/sys/devices/system/cpu/online");
         List<Integer> allowed = readCpuList("/proc/self/status", "Cpus_allowed_list:");
+        if (present != null && !present.isEmpty()) {
+            List<CpuGroup> groups = detectWorkerCpuGroupsForCpus(present);
+            if (!groups.isEmpty()) {
+                workerCpuGroupsComplete = true;
+                return groups;
+            }
+        }
         if (online == null || online.isEmpty()) return Collections.emptyList();
-        if (allowed == null || allowed.isEmpty()) return Collections.emptyList();
-        allowed.retainAll(online);
-        if (allowed.isEmpty()) return Collections.emptyList();
+        if (allowed != null && !allowed.isEmpty()) online.retainAll(allowed);
+        if (online.isEmpty()) return Collections.emptyList();
+        List<CpuGroup> groups = detectWorkerCpuGroupsForCpus(online);
+        if (!groups.isEmpty() && present != null && !present.isEmpty() && online.containsAll(present)) {
+            workerCpuGroupsComplete = true;
+        }
+        return groups;
+    }
 
-        List<Long> metrics = new ArrayList<>();
-        for (int cpu : allowed) {
-            long metric = readCpuMetric(cpu, "cpufreq/cpuinfo_max_freq");
-            if (metric <= 0) metric = readCpuMetric(cpu, "cpufreq/scaling_max_freq");
-            metrics.add(metric);
+    private List<CpuGroup> detectWorkerCpuGroupsForCpus(List<Integer> cpus) {
+        if (cpus == null || cpus.isEmpty()) return Collections.emptyList();
+        List<Long> metrics = readCpuMetrics(cpus, "cpufreq/cpuinfo_max_freq");
+        if (hasMissingMetric(metrics) || !hasMultipleMetrics(metrics)) {
+            metrics = readCpuMetrics(cpus, "cpu_capacity");
         }
         if (hasMissingMetric(metrics) || !hasMultipleMetrics(metrics)) {
-            metrics.clear();
-            for (int cpu : allowed) metrics.add(readCpuMetric(cpu, "cpu_capacity"));
+            metrics = readCpuMetrics(cpus, "cpufreq/scaling_max_freq");
         }
         if (hasMissingMetric(metrics)) return Collections.emptyList();
 
@@ -1621,15 +1641,21 @@ public class Launcher extends Activity {
         for (int i = 0; i < groupCount; i++) {
             groups.add(new CpuGroup(labelsEs[i], labelsEn[i]));
         }
-        for (int i = 0; i < allowed.size(); i++) {
+        for (int i = 0; i < cpus.size(); i++) {
             int tier = Collections.binarySearch(uniqueTiers, metrics.get(i));
             int group = tier == 0 ? 0 : tier == uniqueTiers.size() - 1 ? groupCount - 1
                     : 1 + (tier - 1) * (groupCount - 2) / Math.max(1, uniqueTiers.size() - 2);
-            groups.get(group).cpus.add(allowed.get(i));
+            groups.get(group).cpus.add(cpus.get(i));
         }
         List<CpuGroup> nonEmpty = new ArrayList<>();
         for (CpuGroup group : groups) if (!group.cpus.isEmpty()) nonEmpty.add(group);
         return nonEmpty;
+    }
+
+    private static List<Long> readCpuMetrics(List<Integer> cpus, String metricPath) {
+        List<Long> metrics = new ArrayList<>(cpus.size());
+        for (int cpu : cpus) metrics.add(readCpuMetric(cpu, metricPath));
+        return metrics;
     }
 
     private static boolean hasMissingMetric(List<Long> metrics) {
@@ -1713,9 +1739,11 @@ public class Launcher extends Activity {
                 if ("Little cores".equals(group.labelEn)) workerCpuSelection.addAll(group.cpus);
             }
         }
-        Set<Integer> detected = new HashSet<>();
-        for (CpuGroup group : workerCpuGroups) detected.addAll(group.cpus);
-        workerCpuSelection.retainAll(detected);
+        if (workerCpuGroupsComplete) {
+            Set<Integer> detected = new HashSet<>();
+            for (CpuGroup group : workerCpuGroups) detected.addAll(group.cpus);
+            workerCpuSelection.retainAll(detected);
+        }
         for (CpuGroup group : workerCpuGroups) {
             for (int cpu : group.cpus) {
                 if (workerCpuSelection.contains(cpu)) {
@@ -1733,22 +1761,58 @@ public class Launcher extends Activity {
             rowSubTabs.remove(row);
         }
         workerCpuRows.clear();
+        workerCpuChildRows.clear();
         workerCpuControls.clear();
+        workerCpuToggleBtn = null;
+        workerCpuSummaryView = null;
+
+        P5Views.AngledRowLayout headerRow = new P5Views.AngledRowLayout(this);
+        LinearLayout headerText = new LinearLayout(this);
+        headerText.setOrientation(LinearLayout.VERTICAL);
+        headerText.setPadding(dp(4), 0, dp(10), 0);
+
+        TextView headerTitle = new TextView(this);
+        headerTitle.setText(t("Afinidad de hilos worker", "Worker Thread Affinity"));
+        headerTitle.setTypeface(P5Theme.condensedBold());
+        headerTitle.setTextSize(15.5f);
+        headerTitle.setTextColor(P5Theme.PAPER_WHITE);
+        headerText.addView(headerTitle);
+
+        workerCpuSummaryView = new TextView(this);
+        workerCpuSummaryView.setTypeface(P5Theme.bodyRegular());
+        workerCpuSummaryView.setTextSize(11.5f);
+        workerCpuSummaryView.setTextColor(P5Theme.MUTED_TEXT);
+        headerText.addView(workerCpuSummaryView);
+        headerRow.addView(headerText, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        workerCpuToggleBtn = new P5Views.SlashButton(this, "AUTO", false, 38);
+        headerRow.addView(workerCpuToggleBtn, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(38)));
+        insertWorkerCpuRow(headerRow, false);
 
         if (workerCpuGroups.isEmpty()) {
-            P5Views.AngledRowLayout row = new P5Views.AngledRowLayout(this);
-            TextView status = new TextView(this);
-            status.setText(t("No se pudieron detectar los grupos de CPU; se usará la planificación del sistema",
-                    "CPU groups unavailable; Android scheduler will place worker threads"));
-            status.setTypeface(P5Theme.bodyRegular());
-            status.setTextSize(11.5f);
-            status.setTextColor(P5Theme.MUTED_TEXT);
-            status.setPadding(dp(4), dp(6), dp(10), dp(6));
-            row.addView(status, new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-            insertWorkerCpuRow(row);
+            workerCpuExpanded = false;
+            workerCpuToggleBtn.setEnabled(false);
+            workerCpuToggleBtn.setAlpha(0.45f);
+            updateWorkerCpuHeader();
             return;
         }
+
+        View.OnClickListener toggleDropdown = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                workerCpuExpanded = !workerCpuExpanded;
+                updateWorkerCpuHeader();
+                applySubTabVisibility(TAB_PERFORMANCE, activeSubTab[TAB_PERFORMANCE]);
+                if (controllerMode) {
+                    refreshControllerFocus(false);
+                    updateControllerHints();
+                }
+            }
+        };
+        headerRow.setOnClickListener(toggleDropdown);
+        workerCpuToggleBtn.setOnClickListener(toggleDropdown);
 
         P5Views.AngledRowLayout hintRow = new P5Views.AngledRowLayout(this);
         TextView hint = new TextView(this);
@@ -1760,7 +1824,7 @@ public class Launcher extends Activity {
         hint.setPadding(dp(4), dp(6), dp(10), dp(6));
         hintRow.addView(hint, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-        insertWorkerCpuRow(hintRow);
+        insertWorkerCpuRow(hintRow, true);
 
         for (final CpuGroup group : workerCpuGroups) {
             P5Views.AngledRowLayout row = new P5Views.AngledRowLayout(this);
@@ -1799,6 +1863,7 @@ public class Launcher extends Activity {
                         public void onPick(int index) {
                             if (index == 1) workerCpuSelection.addAll(group.cpus);
                             else workerCpuSelection.removeAll(group.cpus);
+                            workerCpuSelectionEdited = true;
                             save();
                             syncWorkerCpuControls();
                         }
@@ -1806,18 +1871,56 @@ public class Launcher extends Activity {
             workerCpuControls.put(group.cpuList(), control);
             row.addView(control, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT, dp(36)));
-            insertWorkerCpuRow(row);
+            insertWorkerCpuRow(row, true);
         }
+        updateWorkerCpuHeader();
     }
 
-    private void insertWorkerCpuRow(View row) {
+    private void insertWorkerCpuRow(View row, boolean childRow) {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(6);
+        if (childRow) lp.leftMargin = dp(14);
         int index = Math.min(workerCpuInsertIndex + workerCpuRows.size(), workerCpuList.getChildCount());
         workerCpuList.addView(row, index, lp);
         workerCpuRows.add(row);
+        if (childRow) workerCpuChildRows.add(row);
         rowSubTabs.put(row, 0);
+    }
+
+    private void updateWorkerCpuHeader() {
+        if (workerCpuSummaryView == null || workerCpuToggleBtn == null) return;
+        if (workerCpuGroups.isEmpty()) {
+            String saved = config.get("NX_WORKER_CPUS");
+            if (saved != null && !"auto".equalsIgnoreCase(saved.trim())) {
+                workerCpuSummaryView.setText(Lang.f("Grupos de CPU no disponibles; se mantiene %s",
+                        "CPU groups unavailable; keeping saved mask (%s)", saved.trim()));
+            } else {
+                workerCpuSummaryView.setText(t("No se pudieron detectar los grupos de CPU; se usará la planificación del sistema",
+                        "CPU groups unavailable; Android scheduler will place worker threads"));
+            }
+            workerCpuToggleBtn.setText("AUTO");
+            return;
+        }
+        int selectedGroups = 0;
+        for (CpuGroup group : workerCpuGroups) {
+            if (workerCpuSelection.containsAll(group.cpus)) selectedGroups++;
+        }
+        String arrow = workerCpuExpanded ? " ▴" : " ▾";
+        if (workerCpuSelection.isEmpty()) {
+            workerCpuSummaryView.setText(t("Android elige los núcleos; toca para desplegar grupos",
+                    "Android schedules workers; tap to choose CPU groups"));
+            workerCpuToggleBtn.setText("AUTO" + arrow);
+        } else {
+            String cpuIds = formatCpuList(workerCpuSelection).replace("-", "–");
+            workerCpuSummaryView.setText(Lang.f("Permitidos: CPU %s", "Allowed: CPU %s", cpuIds));
+            String badge = selectedGroups == workerCpuGroups.size()
+                    ? t("TODOS", "ALL")
+                    : selectedGroups == 1
+                        ? "CPU " + cpuIds
+                        : Lang.f("%d GRUPOS", "%d GROUPS", selectedGroups);
+            workerCpuToggleBtn.setText(badge + arrow);
+        }
     }
 
     private void syncWorkerCpuControls() {
@@ -1828,6 +1931,7 @@ public class Launcher extends Activity {
                 control.setSelectedIndex(selected ? 1 : 0);
             }
         }
+        updateWorkerCpuHeader();
     }
 
     private void addOptionRow(LinearLayout parent, final Option o) {
@@ -1950,7 +2054,11 @@ public class Launcher extends Activity {
             View child = list.getChildAt(i);
             Integer s = rowSubTabs.get(child);
             if (s != null) {
-                child.setVisibility(s == subIdx ? View.VISIBLE : View.GONE);
+                boolean visible = (s == subIdx);
+                if (visible && workerCpuChildRows.contains(child) && !workerCpuExpanded) {
+                    visible = false;
+                }
+                child.setVisibility(visible ? View.VISIBLE : View.GONE);
             }
         }
     }
@@ -2544,18 +2652,11 @@ public class Launcher extends Activity {
         load();
         workerCpuGroups.clear();
         workerCpuGroups.addAll(detectWorkerCpuGroups());
-        String savedWorkerCpus = config.get("NX_WORKER_CPUS");
-        boolean forceScheduler = workerCpuGroups.isEmpty()
-                && ((savedWorkerCpus != null && !"auto".equalsIgnoreCase(savedWorkerCpus))
-                    || "1".equals(config.get("NX_WORKER_LITTLE")));
-        if (forceScheduler) {
-            config.put("NX_WORKER_CPUS", "auto");
-            config.remove("NX_WORKER_LITTLE");
-        }
+        workerCpuSelectionEdited = false;
         loadWorkerCpuSelection();
         rebuildWorkerCpuRows();
         applySubTabVisibility(TAB_PERFORMANCE, activeSubTab[TAB_PERFORMANCE]);
-        boolean writeConfigAfterRefresh = forceScheduler;
+        boolean writeConfigAfterRefresh = false;
         if (!prefs().getBoolean("nx_log_default_on_v1", false)) {
             prefs().edit().putBoolean("nx_log_default_on_v1", true).apply();
             config.put("NX_ENABLE_LOG", "1");
@@ -2916,9 +3017,13 @@ public class Launcher extends Activity {
         if (!dataDir().isDirectory()) return;
         load();
         for (Option o : options) config.put(o.key, o.values[o.pick]);
-        config.remove("NX_WORKER_LITTLE");
-        config.put("NX_WORKER_CPUS",
-                workerCpuSelection.isEmpty() ? "auto" : formatCpuList(workerCpuSelection));
+        boolean hasSavedWorkerConfig = config.get("NX_WORKER_CPUS") != null
+                || "1".equals(config.get("NX_WORKER_LITTLE"));
+        if (workerCpuGroupsComplete || workerCpuSelectionEdited || !hasSavedWorkerConfig) {
+            config.remove("NX_WORKER_LITTLE");
+            config.put("NX_WORKER_CPUS",
+                    workerCpuSelection.isEmpty() ? "auto" : formatCpuList(workerCpuSelection));
+        }
         final String res = config.get("RESOLUTION");
         if ("360p".equals(res)) {
             config.put("NX_HANDHELD", "1");

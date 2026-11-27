@@ -83,15 +83,27 @@ void notify_all() {
 
 KThread* self_thread() { return t_self; }
 
+static bool worker_little_enabled() {
+    const char* e = std::getenv("NX_WORKER_LITTLE");
+    return !(e && e[0] == '0');
+}
+
 #if defined(__ANDROID__)
+static bool has_custom_worker_cpus(const char*& cpu_list) {
+    cpu_list = std::getenv("NX_WORKER_CPUS");
+    return cpu_list && *cpu_list && std::strcmp(cpu_list, "auto") != 0;
+}
+
 static void apply_worker_affinity(const char* name, bool worker_little) {
-    const char* cpu_list = std::getenv("NX_WORKER_CPUS");
-    if (cpu_list && *cpu_list) {
-        if (std::strcmp(cpu_list, "auto") == 0) {
-            plat::reset_current_thread_affinity(name);
-        } else if (!plat::pin_current_thread_to_cpu_list(cpu_list, name)) {
+    const char* cpu_list = nullptr;
+    if (has_custom_worker_cpus(cpu_list)) {
+        if (!plat::pin_current_thread_to_cpu_list(cpu_list, name)) {
             plat::reset_current_thread_affinity(name);
         }
+        return;
+    }
+    if (cpu_list && std::strcmp(cpu_list, "auto") == 0) {
+        plat::reset_current_thread_affinity(name);
         return;
     }
     if (worker_little) plat::pin_current_thread_to_little_cores(name);
@@ -118,13 +130,10 @@ static void log_worker_affinity(const char* name, const char* policy) {
 #endif
 
 void repin_guest_workers_to_selected_cpus(int64_t replay_tid) {
-    static const bool worker_little = [] {
-        const char* e = std::getenv("NX_WORKER_LITTLE");
-        return !(e && e[0] == '0');
-    }();
+    const bool worker_little = worker_little_enabled();
 #if defined(__ANDROID__)
-    const char* cpu_list = std::getenv("NX_WORKER_CPUS");
-    const bool custom = cpu_list && *cpu_list;
+    const char* cpu_list = nullptr;
+    const bool custom = has_custom_worker_cpus(cpu_list);
     if (!custom && !worker_little) return;
 #else
     if (!worker_little) return;
@@ -140,10 +149,8 @@ void repin_guest_workers_to_selected_cpus(int64_t replay_tid) {
         if (t->is_replay) {
             // When NX_REPLAY_THREAD=1, replay runs on the dedicated host thread (replay_tid is not a KThread);
             // keep guest submitting threads on main_non_replay at priority -6 so they do not preempt replay.
-            static const bool async_replay = [] {
-                const char* e = std::getenv("NX_REPLAY_THREAD");
-                return e && e[0] == '1';
-            }();
+            const char* e = std::getenv("NX_REPLAY_THREAD");
+            const bool async_replay = e && e[0] == '1';
             plat::pin_thread_tid_to_big_cores(t->host_tid, async_replay ? -6 : -10);
             continue;
         }
@@ -155,8 +162,7 @@ void repin_guest_workers_to_selected_cpus(int64_t replay_tid) {
         t->is_replay = false;
 #if defined(__ANDROID__)
         if (custom) {
-            if (std::strcmp(cpu_list, "auto") == 0) plat::reset_thread_tid_affinity(t->host_tid);
-            else if (!plat::pin_thread_tid_to_cpu_list(t->host_tid, cpu_list))
+            if (!plat::pin_thread_tid_to_cpu_list(t->host_tid, cpu_list))
                 plat::reset_thread_tid_affinity(t->host_tid);
         } else {
             plat::pin_thread_tid_to_little_cores(t->host_tid);
@@ -503,15 +509,13 @@ static void thread_main(void* p) {
     // starving the frame-critical Vulkan Replay and Present threads.
     if (!t->is_replay) {
         plat::set_thread_priority(0);
-        static const bool worker_little = [] {
-            const char* e = std::getenv("NX_WORKER_LITTLE");
-            return !(e && e[0] == '0');  // Default true: isolate non-replay guest threads to Little cores 0-5
-        }();
+        const bool worker_little = worker_little_enabled();
 #if defined(__ANDROID__)
         apply_worker_affinity(name, worker_little);
-        const char* cpu_list = std::getenv("NX_WORKER_CPUS");
-        log_worker_affinity(name, cpu_list && *cpu_list
-                ? cpu_list : worker_little ? "little" : "scheduler");
+        const char* cpu_list = nullptr;
+        log_worker_affinity(name, has_custom_worker_cpus(cpu_list)
+                ? cpu_list : (cpu_list && std::strcmp(cpu_list, "auto") == 0)
+                    ? "auto" : worker_little ? "little" : "scheduler");
 #else
         if (worker_little) {
             plat::pin_current_thread_to_little_cores(name);

@@ -51,74 +51,6 @@ uint64_t thread_cpu_ns() {
 }
 
 #if defined(__ANDROID__)
-// Cluster of each CPU, 0 = slowest, from cpufreq's highest clock.
-struct Cpus {
-    std::vector<int> cluster;
-    int clusters = 0;
-};
-
-const Cpus& cpus() {
-    static const Cpus c = [] {
-        Cpus x;
-        long n = sysconf(_SC_NPROCESSORS_CONF);
-        std::vector<long> freq;
-        for (long k = 0; k < n && k < 32; k++) {
-            char path[96];
-            std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", k);
-            long f = 0;
-            if (FILE* fp = std::fopen(path, "r")) {
-                if (std::fscanf(fp, "%ld", &f) != 1) f = 0;
-                std::fclose(fp);
-            }
-            if (f == 0) {
-                std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/cpufreq/scaling_max_freq", k);
-                if (FILE* fp = std::fopen(path, "r")) {
-                    if (std::fscanf(fp, "%ld", &f) != 1) f = 0;
-                    std::fclose(fp);
-                }
-            }
-            freq.push_back(f);
-        }
-        std::vector<long> distinct = freq;
-        std::sort(distinct.begin(), distinct.end());
-        distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
-
-        bool valid_freq = !distinct.empty() && distinct.back() > 0 && distinct.size() > 1;
-        if (n == 10) {
-            // Exynos 2xxx-class default: 4 efficiency, 3 mid, 2 big, 1 prime.
-            x.cluster = {0, 0, 0, 0, 1, 1, 1, 2, 2, 3};
-            x.clusters = 4;
-        } else if (valid_freq) {
-            for (long f : freq)
-                x.cluster.push_back(int(std::lower_bound(distinct.begin(), distinct.end(), f) - distinct.begin()));
-            x.clusters = int(distinct.size());
-        } else if (n >= 4) {
-            // SELinux blocked cpufreq sysfs access: fall back to standard ARM big.LITTLE / DynamIQ topology
-            x.cluster.clear();
-            if (n == 8) {
-                // On 8-core MediaTek (Helio G99) / Qualcomm SoCs: cores 0-5 are LITTLE (cluster 0), cores 6-7 are BIG (cluster 1)
-                x.cluster = {0, 0, 0, 0, 0, 0, 1, 1};
-                x.clusters = 2;
-            } else {
-                for (long k = 0; k < n; k++)
-                    x.cluster.push_back(k < n / 2 ? 0 : 1);
-                x.clusters = 2;
-            }
-            log("threads: cpufreq blocked by SELinux; using fallback topology for %ld CPUs (%d clusters)", n, x.clusters);
-        } else {
-            x.clusters = 1;
-            for (long k = 0; k < n; k++) x.cluster.push_back(0);
-        }
-
-        std::string desc;
-        for (size_t k = 0; k < x.cluster.size(); k++)
-            desc += (k ? " " : "") + (k < freq.size() ? std::to_string(freq[k] / 1000) : "0") + "/" + std::to_string(x.cluster[k]);
-        log("threads: %ld CPUs, MHz/cluster: %s", n, desc.c_str());
-        return x;
-    }();
-    return c;
-}
-
 int affinity_mode() {
     static const int m = [] {
         const char* e = std::getenv("NX_AFFINITY");
@@ -130,7 +62,7 @@ int affinity_mode() {
 
 void place(int role) {
     set_thread_priority(role == 0 ? -19 : -4);
-    const Cpus& c = cpus();
+    const CpuTopology& c = cpu_topology();
     int mode = affinity_mode();
     if (!mode || c.clusters < 2) return;
     cpu_set_t set;
@@ -150,18 +82,13 @@ void place(int role) {
         if (mode == 2) {
             in = cl > 0;
         } else if (role == 0) {
-            in = cl == top;
-        } else if (c.cluster.size() == 10 && c.clusters == 4) {
-            // Keep the Exynos prime core isolated for replay/present. Mid and big cores serve
-            // the game/main threads without moving the main thread onto efficiency cores.
-            in = cl == 1 || cl == 2;
+            in = top_count >= 2 ? int(k) == last_top_cpu : cl == top;
+        } else if (top_count >= 2) {
+            // Reserve the highest top core exclusively for role 0 (replay+present) and let role 1
+            // (game main) use the remaining non-little cores (or all other cores on 2-cluster SoCs).
+            in = c.clusters > 2 ? (cl > 0 && int(k) != last_top_cpu) : (int(k) != last_top_cpu);
         } else if (c.clusters > 2) {
             in = cl > 0 && cl < top;
-        } else if (top_count >= 2) {
-            // On 2-cluster big.LITTLE SoCs (e.g. 6 Little + 2 Big cores), reserve the highest Big core
-            // exclusively for role 0 (replay+present) and let role 1 (game main) run on the other Big core(s)
-            // plus Little cores so game main never preempts replay+present on the dedicated Big core.
-            in = int(k) != last_top_cpu;
         } else {
             in = cl == top;
         }
@@ -225,7 +152,7 @@ void thread_counters(uint64_t& cpu_ns, long faults[2], long switches[2]) {
 
 void place_fast_cores() {
 #if defined(__ANDROID__)
-    const Cpus& c = cpus();
+    const CpuTopology& c = cpu_topology();
     int mode = affinity_mode();
     if (!mode || c.clusters < 2) return;
     cpu_set_t set;
@@ -279,7 +206,7 @@ void frame_thread_tick(int role) {
         if ((role & 1) == 0) nx::repin_guest_workers_to_selected_cpus(current_thread_id());
     }
     int cpu = sched_getcpu();
-    const Cpus& c = cpus();
+    const CpuTopology& c = cpu_topology();
     if (cpu >= 0 && size_t(cpu) < c.cluster.size()) r.on[std::min(c.cluster[size_t(cpu)], 3)]++;
 #endif
     uint64_t now = monotonic_ns();
