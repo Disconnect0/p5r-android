@@ -788,6 +788,13 @@ public class Launcher extends Activity {
                 new String[] {"2", "0"},
                 new String[] {"ASÍNCRONO", "SÍNCRONO"},
                 new String[] {"ASYNC", "SYNC"}, 0, false));
+        options.add(new Option(TAB_PERFORMANCE, "NX_OCCL",
+                "Descarte por oclusión", "Occlusion Culling",
+                "Desactivado renderiza todos los objetos; activado omite dibujar objetos ocultos tras otras superficies para reducir la carga de CPU en escenas densas.",
+                "Disabled renders all objects; enabled skips drawing objects hidden behind other geometry to reduce CPU draw overhead in dense scenes.",
+                new String[] {"0", "1"},
+                new String[] {"NO", "SÍ"},
+                new String[] {"OFF", "ON"}, 0, false));        
         options.add(new Option(TAB_PERFORMANCE, "GRAPHICS",
                 "Calidad de texturas", "Texture Quality",
                 "Sesgo de mipmaps (Nítido usa -0.5 para mayor detalle)",
@@ -834,13 +841,6 @@ public class Launcher extends Activity {
                 "Contador de FPS", "FPS Counter",
                 "Muestra la tasa de fotogramas en pantalla durante el juego",
                 "Displays live frame rate overlay while playing",
-                new String[] {"0", "1"},
-                new String[] {"NO", "SÍ"},
-                new String[] {"OFF", "ON"}, 0, false));
-        options.add(new Option(TAB_PERFORMANCE, "NX_OCCL",
-                "Descarte por oclusión", "Occlusion Culling",
-                "Desactivado renderiza todos los objetos; activado omite dibujar objetos ocultos tras otras superficies para reducir la carga de CPU en escenas densas.",
-                "Disabled renders all objects; enabled skips drawing objects hidden behind other geometry to reduce CPU draw overhead in dense scenes.",
                 new String[] {"0", "1"},
                 new String[] {"NO", "SÍ"},
                 new String[] {"OFF", "ON"}, 0, false));
