@@ -259,7 +259,10 @@ ConstantsBlock* constants_block_obj(ShaderStage stage, int st) {
             return s_last_const_block[st];
         }
     }
-    for (size_t k = 0; k < g_constants_used; k++) {
+    // Recent NPC skinning states are more likely to be reused nearby.
+    // Search newest constants first to reduce cache lookup work.
+    for (size_t k = g_constants_used; k > 0; ) {
+        --k;
         if (g_constants[k]->hw == hw && std::memcmp(g_constants[k]->storage, key, sizeof g_constants[k]->storage) == 0) {
             if (st >= 0 && st < 2) {
                 s_last_const_block[st] = g_constants[k].get();
