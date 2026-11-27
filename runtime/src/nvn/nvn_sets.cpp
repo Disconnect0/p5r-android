@@ -220,7 +220,8 @@ struct SupportBlock {
 };
 struct ConstantsBlock {
     int hw = 0;         // the key: the Maxwell stage (vertex 0, fragment 4) and the stage's storage bindings,
-    Range storage[16];  // all driver_constants reads outside compute
+    Range storage[16];
+    uint64_t storage_hash = 0;  // all driver_constants reads outside compute
     std::array<uint8_t, 0x1000> bytes;
     uint64_t upload_gen = 0;
     VkDescriptorBufferInfo upload_info{};
@@ -231,6 +232,16 @@ std::vector<std::unique_ptr<ConstantsBlock>> g_constants;
 size_t g_support_used = 0, g_constants_used = 0;
 static ConstantsBlock* s_last_const_block[2] = {};
 static uint32_t s_last_const_block_ver[2] = {};
+
+static uint64_t hash_storage(const Range* storage) {
+    const auto* data = reinterpret_cast<const uint8_t*>(storage);
+    uint64_t hash = 14695981039346656037ull;
+    for (size_t i = 0; i < sizeof(Range) * 16; i++) {
+        hash ^= data[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
 
 const SupportBuffer* support_block(float width, float height, float scale) {
     for (size_t k = 0; k < g_support_used; k++)
@@ -259,11 +270,14 @@ ConstantsBlock* constants_block_obj(ShaderStage stage, int st) {
             return s_last_const_block[st];
         }
     }
-    // Recent NPC skinning states are more likely to be reused nearby.
-    // Search newest constants first to reduce cache lookup work.
+    // Hash filters candidates before the full storage comparison.
+    // Search newest constants first to favor recently reused states.
+    const uint64_t storage_hash = hash_storage(key);
     for (size_t k = g_constants_used; k > 0; ) {
         --k;
-        if (g_constants[k]->hw == hw && std::memcmp(g_constants[k]->storage, key, sizeof g_constants[k]->storage) == 0) {
+        if (g_constants[k]->hw == hw &&
+            g_constants[k]->storage_hash == storage_hash &&
+            std::memcmp(g_constants[k]->storage, key, sizeof g_constants[k]->storage) == 0) {
             if (st >= 0 && st < 2) {
                 s_last_const_block[st] = g_constants[k].get();
                 s_last_const_block_ver[st] = g_storage_state_version[st];
@@ -276,6 +290,7 @@ ConstantsBlock* constants_block_obj(ShaderStage stage, int st) {
     ConstantsBlock& b = *g_constants[g_constants_used++];
     b.hw = hw;
     std::memcpy(b.storage, key, sizeof b.storage);
+    b.storage_hash = storage_hash;
     b.bytes = driver_constants(stage, st);
     b.upload_gen = 0;
     if (st >= 0 && st < 2) {
