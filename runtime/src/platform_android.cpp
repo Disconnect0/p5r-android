@@ -1582,6 +1582,7 @@ extern "C" void android_main(android_app* app) {
         unsetenv("NX_ASYNC_PIPELINES");
         unsetenv("NX_WORKER_CPUS");
         setenv("NX_WORKER_LITTLE", "0", 1);
+        setenv("NX_OCCL", "0", 1);
         std::ifstream f(g_root + "/config.txt");
         std::string line;
         while (std::getline(f, line)) {

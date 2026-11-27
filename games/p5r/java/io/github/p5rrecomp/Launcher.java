@@ -837,6 +837,13 @@ public class Launcher extends Activity {
                 new String[] {"0", "1"},
                 new String[] {"NO", "SÍ"},
                 new String[] {"OFF", "ON"}, 0, false));
+        options.add(new Option(TAB_PERFORMANCE, "NX_OCCL",
+                "Descarte por oclusión", "Occlusion Culling",
+                "Desactivado renderiza todos los objetos; activado omite dibujar objetos ocultos tras otras superficies para reducir la carga de CPU en escenas densas.",
+                "Disabled renders all objects; enabled skips drawing objects hidden behind other geometry to reduce CPU draw overhead in dense scenes.",
+                new String[] {"0", "1"},
+                new String[] {"NO", "SÍ"},
+                new String[] {"OFF", "ON"}, 0, false));
         options.add(new Option(TAB_FILES, "NX_ENABLE_LOG",
                 "Registro de depuración (nx.log)", "Debug Logging (nx.log)",
                 "Graba detalles del motor y GPU en nx.log (los cierres se guardan siempre)",
