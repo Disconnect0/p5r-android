@@ -1864,13 +1864,15 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, 
     if (!count) return true;
 
     const uint64_t bytes = uint64_t(count) * index_size(c.mask);
-    const uint8_t* p = guest_bytes(c.a[0]);
-    if (!p) return false;
+    const uint8_t* p = nullptr;
 
-    // Compute-written 8-bit indices retain the original path and its
-    // existing stale-data diagnostics.
-    if (widen_u8 && written_overlaps(p, bytes))
-        return draw_inputs(cb, vs, true, c, in);
+    // Keep the compute-written 8-bit fallback and its stale-data diagnostics.
+    if (widen_u8) {
+        p = guest_bytes(c.a[0]);
+        if (!p) return false;
+        if (written_overlaps(p, bytes))
+            return draw_inputs(cb, vs, true, c, in);
+    }
 
     const uint64_t cur_gen = dedup_generation();
     const uint64_t cur_frame_id = g_frame.load(std::memory_order_relaxed) + 1;
@@ -1893,6 +1895,9 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, 
             }
         }
     }
+
+    if (!p) p = guest_bytes(c.a[0]);
+    if (!p) return false;
 
     if (widen_u8) {
         // Convert once per unchanged index range; subsequent draws reuse the cached
