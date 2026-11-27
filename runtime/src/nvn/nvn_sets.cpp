@@ -1841,35 +1841,64 @@ void sets_invalidate_range(const uint8_t* p, uint64_t size) {
 // colour) had its index buffer copied each time. Guest bytes, like the vertex streams, so dedup's rule holds; 8-bit
 // indices are widened per draw as before.
 bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const Cmd& c, DrawInputs& in) {
-    if (!indexed || draw_slow(kSlowUploads) || vk_index_type(c.mask) == VK_INDEX_TYPE_UINT8_EXT)
+    if (!indexed || draw_slow(kSlowUploads))
         return draw_inputs(cb, vs, indexed, c, in);
+
     draw_inputs(cb, vs, false, c, in);  // the vertex streams
-    in.index_type = vk_index_type(c.mask);
-    uint64_t bytes = uint64_t(uint32_t(c.i[0])) * index_size(c.mask);
+
+    const VkIndexType source_type = vk_index_type(c.mask);
+    const bool widen_u8 = source_type == VK_INDEX_TYPE_UINT8_EXT;
+    const uint32_t count = uint32_t(c.i[0]);
+
+    if (!count) return true;
+
+    const uint64_t bytes = uint64_t(count) * index_size(c.mask);
+    const uint8_t* p = guest_bytes(c.a[0]);
+    if (!p) return false;
+
+    // Compute-written 8-bit indices retain the original path and its
+    // existing stale-data diagnostics.
+    if (widen_u8 && written_overlaps(p, bytes))
+        return draw_inputs(cb, vs, true, c, in);
+
     const uint64_t cur_gen = dedup_generation();
     const uint64_t cur_frame_id = g_frame.load(std::memory_order_relaxed) + 1;
     const uint64_t cur_evict_epoch = cache_evict_epoch();
+
     auto idx_entry_valid = [&](const LastIndexEntry& e) -> bool {
         return e.gen == cur_gen ||
                (e.is_cached && e.frame_id == cur_frame_id && e.evict_epoch == cur_evict_epoch);
     };
 
     const size_t idx_base = ((c.a[0] >> 4) ^ (c.a[0] >> 12)) & (kIndexCacheSlots - 1);
+
     if (c.a[0]) {
         for (size_t step = 0; step < 4; step++) {
             const LastIndexEntry& e = s_index_cache[(idx_base + step) & (kIndexCacheSlots - 1)];
             if (e.addr == c.a[0] && e.bytes == bytes && e.mask == c.mask && idx_entry_valid(e)) {
                 in.index = e.upload;
+                in.index_type = widen_u8 ? VK_INDEX_TYPE_UINT16 : source_type;
                 return true;
             }
         }
     }
-    const uint8_t* p = guest_bytes(c.a[0]);
-    if (!p) return false;
-    g_upload_kind = kUploadIndex;
-    if (!written_read(cb, p, bytes, bytes, index_size(c.mask), in.index))
-        in.index = dedup_upload(p, bytes, bytes, 16);
-    g_upload_kind = kUploadOther;
+
+    if (widen_u8) {
+        // Convert once per unchanged index range; subsequent draws reuse the cached
+        // 16-bit upload instead of allocating and widening the same indices again.
+        in.index = upload_alloc(uint64_t(count) * sizeof(uint16_t), 16);
+        auto* dst = reinterpret_cast<uint16_t*>(in.index.ptr);
+        for (uint32_t i = 0; i < count; i++)
+            dst[i] = p[i];
+        in.index_type = VK_INDEX_TYPE_UINT16;
+    } else {
+        g_upload_kind = kUploadIndex;
+        if (!written_read(cb, p, bytes, bytes, index_size(c.mask), in.index))
+            in.index = dedup_upload(p, bytes, bytes, 16);
+        g_upload_kind = kUploadOther;
+        in.index_type = source_type;
+    }
+
     size_t put_idx = idx_base;
     for (size_t step = 0; step < 4; step++) {
         size_t cand = (idx_base + step) & (kIndexCacheSlots - 1);
@@ -1878,17 +1907,23 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, 
             break;
         }
     }
+
     const bool cached_buf = is_buffer_cache_buffer(in.index.buffer);
     s_index_cache[put_idx] = {p, c.a[0], bytes, c.mask, cur_gen, cur_frame_id, cur_evict_epoch, cached_buf, in.index};
+
     const size_t w = put_idx >> 6;
     s_index_valid_words[w] |= 1ull << (put_idx & 63);
     s_index_group_mask |= 1u << w;
+
     if (p < s_index_lo) s_index_lo = p;
     if (p + bytes > s_index_hi) s_index_hi = p + bytes;
-    if ((reinterpret_cast<uintptr_t>(p) >> 16) == ((reinterpret_cast<uintptr_t>(p + bytes) - 1) >> 16))
+
+    if ((reinterpret_cast<uintptr_t>(p) >> 16) ==
+        ((reinterpret_cast<uintptr_t>(p + bytes) - 1) >> 16))
         s_index_page_bloom |= index_bloom_bit(p);
     else
         s_index_page_bloom = ~0ull;
+
     return true;
 }
 
