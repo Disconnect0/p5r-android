@@ -109,10 +109,10 @@ jobs:
           DATE=$(date +'%Y%m%d')
 
           if [ -n "${PERF_TAG}" ]; then
-            BASE_NAME="p5r-v0.5.12-${PERF_TAG}-${DATE}-${SHORT_SHA}"
+            BASE_NAME="p5r-v0.5.13-${PERF_TAG}-${DATE}-${SHORT_SHA}"
           else
             SLUG=$(echo "${REF_NAME}" | sed 's|perf/||; s|fix/||; s|android-||; s|/|-|g')
-            BASE_NAME="p5r-v0.5.12-${SLUG}-${DATE}-${SHORT_SHA}"
+            BASE_NAME="p5r-v0.5.13-${SLUG}-${DATE}-${SHORT_SHA}"
           fi
           APK_NAME="${BASE_NAME}.apk"
 
