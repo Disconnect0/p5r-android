@@ -23,6 +23,8 @@ thread_local std::shared_ptr<CmdList> s_mru_list[2] = {};
 }  // namespace
 
 void submit_lists_reset() {
+    if (g_called.bucket_count() < 512)
+        g_called.reserve(512);
     g_called.clear();
     s_mru_handle[0] = s_mru_handle[1] = 0;
     s_mru_list[0].reset();
