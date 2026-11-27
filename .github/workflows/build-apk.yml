@@ -55,6 +55,26 @@ jobs:
           unzip -p /tmp/p5r_v0513.apk lib/arm64-v8a/libspirvharness.so > private/build/spirv_harness_android/libspirvharness.so
           chmod +x private/build/spirv_harness_android/libspirvharness.so
 
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.P5R_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.P5R_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.P5R_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.P5R_KEY_PASSWORD }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            echo "Configure P5R_KEYSTORE_BASE64 and its password/alias secrets to build an installable APK." >&2
+            exit 1
+          fi
+          mkdir -p "$HOME/.android"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/p5r.jks"
+          {
+            echo "P5R_KEYSTORE=$HOME/.android/p5r.jks"
+            echo "P5R_KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD:-android}"
+            echo "P5R_KEY_ALIAS=${KEY_ALIAS:-androiddebugkey}"
+            echo "P5R_KEY_PASSWORD=${KEY_PASSWORD:-${KEYSTORE_PASSWORD:-android}}"
+          } >> "$GITHUB_ENV"
+
       - name: Build P5R APK
         run: |
           chmod +x android/build_apk.sh
