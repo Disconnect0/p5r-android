@@ -24,13 +24,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define VK_NO_PROTOTYPES
@@ -71,7 +74,13 @@ std::atomic<uint64_t> g_occ_min{~uint64_t(0)}, g_occ_max{0};
 std::atomic<uint64_t> g_truncations{0}, g_pending_max{0};
 std::atomic<uint64_t> g_latency_ok{0}, g_latency_early{0};
 AudioDone g_done = nullptr;
+std::mutex g_stream_lock;
 AAudioStream* g_stream = nullptr;
+std::mutex g_reopen_mtx;
+std::condition_variable g_reopen_cv;
+bool g_need_reopen = false;
+bool g_reopen_thread_started = false;
+std::atomic<bool> g_paused{false};
 // Per ~2 s, logged from the callback: how the device pulls (callbacks, frames per call) and how often the game's
 // buffers ran out (underruns: silence played, and the game's buffers come back late, its clock stalls).
 struct CbStats {
@@ -135,13 +144,27 @@ aaudio_data_callback_result_t audio_cb(AAudioStream*, void*, void* out, int32_t 
 #endif
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
+void notify_reopen() {
+    {
+        std::lock_guard lk(g_reopen_mtx);
+        g_need_reopen = true;
+    }
+    g_reopen_cv.notify_one();
+}
+
 void audio_error_cb(AAudioStream*, void*, aaudio_result_t error) {
     if (error == AAUDIO_ERROR_DISCONNECTED) {
         nx::log("audio: AAudio stream disconnected (error %d)", int(error));
+        notify_reopen();
     }
 }
 
-bool audio_stream_create() {
+// Caller must hold g_stream_lock.
+bool audio_stream_create_locked() {
+    if (g_stream) {
+        AAudioStream_close(g_stream);
+        g_stream = nullptr;
+    }
     AAudioStreamBuilder* b = nullptr;
     if (AAudio_createStreamBuilder(&b) != AAUDIO_OK) return false;
     AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
@@ -150,22 +173,67 @@ bool audio_stream_create() {
     AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     AAudioStreamBuilder_setDataCallback(b, audio_cb, nullptr);
     AAudioStreamBuilder_setErrorCallback(b, audio_error_cb, nullptr);
-    bool ok = AAudioStreamBuilder_openStream(b, &g_stream) == AAUDIO_OK && AAudioStream_requestStart(g_stream) == AAUDIO_OK;
+    AAudioStream* s = nullptr;
+    aaudio_result_t res = AAudioStreamBuilder_openStream(b, &s);
     AAudioStreamBuilder_delete(b);
-    if (ok)
-        nx::log("audio: AAudio stream: %d frames per burst, buffer %d of %d frames, performance mode %d",
-                int(AAudioStream_getFramesPerBurst(g_stream)), int(AAudioStream_getBufferSizeInFrames(g_stream)),
-                int(AAudioStream_getBufferCapacityInFrames(g_stream)), int(AAudioStream_getPerformanceMode(g_stream)));
-    return ok;
+    if (res != AAUDIO_OK || !s) {
+        nx::log("audio: AAudioStreamBuilder_openStream failed (%d)", int(res));
+        return false;
+    }
+    {
+        std::lock_guard lk(g_audio);
+        g_device = 0;
+        g_latency_ns.store(0, std::memory_order_relaxed);
+    }
+    res = AAudioStream_requestStart(s);
+    if (res != AAUDIO_OK) {
+        nx::log("audio: AAudioStream_requestStart failed (%d)", int(res));
+        AAudioStream_close(s);
+        return false;
+    }
+    g_stream = s;
+    nx::log("audio: AAudio stream: %d frames per burst, buffer %d of %d frames, performance mode %d",
+            int(AAudioStream_getFramesPerBurst(g_stream)), int(AAudioStream_getBufferSizeInFrames(g_stream)),
+            int(AAudioStream_getBufferCapacityInFrames(g_stream)), int(AAudioStream_getPerformanceMode(g_stream)));
+    return true;
 }
 
-void audio_reopen_if_disconnected() {
-    if (!g_stream || AAudioStream_getState(g_stream) == AAUDIO_STREAM_STATE_DISCONNECTED) {
-        if (g_stream) {
-            AAudioStream_close(g_stream);
-            g_stream = nullptr;
+// Caller must hold g_stream_lock.
+bool audio_reopen_locked(bool force = false) {
+    if (g_paused.load(std::memory_order_acquire)) return false;
+    bool flagged = false;
+    {
+        std::lock_guard lk(g_reopen_mtx);
+        flagged = g_need_reopen;
+        g_need_reopen = false;
+    }
+    if (force || flagged || !g_stream || AAudioStream_getState(g_stream) == AAUDIO_STREAM_STATE_DISCONNECTED) {
+        if (!audio_stream_create_locked()) {
+            std::lock_guard lk(g_reopen_mtx);
+            g_need_reopen = true;
+            return false;
         }
-        audio_stream_create();
+    }
+    return true;
+}
+
+void audio_reopen_worker() {
+    plat::set_thread_name("audio-reopen");
+    for (;;) {
+        {
+            std::unique_lock lk(g_reopen_mtx);
+            g_reopen_cv.wait(lk, [] { return g_need_reopen && !g_paused.load(std::memory_order_acquire); });
+        }
+        bool ok = false;
+        {
+            std::lock_guard lk(g_stream_lock);
+            ok = audio_reopen_locked();
+        }
+        if (!ok && !g_paused.load(std::memory_order_acquire)) {
+            // Brief backoff while Android finishes switching BT/USB audio routes.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            g_reopen_cv.notify_one();
+        }
     }
 }
 }  // namespace
@@ -174,21 +242,28 @@ bool audio_open(AudioDone done) {
     g_done = done;
     // NX_MUTE=1 (and headless test runs): no device, the callers pace themselves with a timer (as on Windows and macOS).
     if (headless() || std::getenv("NX_MUTE")) return false;
-    return audio_stream_create();
+    std::lock_guard lk(g_stream_lock);
+    if (!g_reopen_thread_started) {
+        g_reopen_thread_started = true;
+        std::thread(audio_reopen_worker).detach();
+    }
+    return audio_stream_create_locked();
 }
 
 void audio_pause(bool paused) {
-    if (!g_stream) return;
+    g_paused.store(paused, std::memory_order_release);
+    std::lock_guard lk(g_stream_lock);
     if (paused) {
-        AAudioStream_requestPause(g_stream);
+        if (g_stream) AAudioStream_requestPause(g_stream);
     } else {
-        audio_reopen_if_disconnected();
+        audio_reopen_locked();
         if (g_stream) {
             aaudio_result_t res = AAudioStream_requestStart(g_stream);
             if (res == AAUDIO_ERROR_DISCONNECTED) {
-                audio_reopen_if_disconnected();
+                audio_reopen_locked(true);
             }
         }
+        g_reopen_cv.notify_one();
     }
 }
 
@@ -199,9 +274,12 @@ static void measure_latency(uint64_t start, uint64_t read, uint64_t device) {
     static uint32_t n = 0;
     if (n++ % 8) return;
     int64_t pos = 0, at = 0;
-    if (!g_stream || AAudioStream_getTimestamp(g_stream, CLOCK_MONOTONIC, &pos, &at) != AAUDIO_OK || at <= 0) {
-        g_latency_early.fetch_add(1, std::memory_order_relaxed);
-        return;
+    {
+        std::lock_guard lk(g_stream_lock);
+        if (!g_stream || AAudioStream_getTimestamp(g_stream, CLOCK_MONOTONIC, &pos, &at) != AAUDIO_OK || at <= 0) {
+            g_latency_early.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
     }
     const int64_t frame = int64_t(device + (start - read));  // the device's index of the buffer's first frame
     const int64_t when = at + (frame - pos) * 1000000000ll / 48000;
@@ -216,8 +294,13 @@ static void measure_latency(uint64_t start, uint64_t read, uint64_t device) {
 }
 
 bool audio_submit(const void* data, size_t bytes, void* ctx) {
-    audio_reopen_if_disconnected();
-    if (!g_stream) return false;
+    {
+        std::lock_guard lk(g_stream_lock);
+        if (!g_paused.load(std::memory_order_acquire)) {
+            audio_reopen_locked();
+        }
+        if (!g_stream) return false;
+    }
     uint64_t start, read, device;
 #if NX_DIAGNOSTICS_ON
     uint64_t diag_pending = 0;
