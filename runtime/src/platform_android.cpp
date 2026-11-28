@@ -1606,7 +1606,9 @@ extern "C" void android_main(android_app* app) {
     // memset under each allocation and madvise churn (docs/nvn/android-perf/PLAN.md, phase 2). NX_MALLOC_TUNE=0: as
     // the system set it.
     if (const char* e = getenv("NX_MALLOC_TUNE"); !(e && e[0] == '0')) {
-        int zero = mallopt(M_BIONIC_ZERO_INIT, 1), decay = mallopt(M_DECAY_TIME, 1);
+        // M_DECAY_TIME=0: release freed pages immediately via MADV_DONTNEED instead of holding them
+        // in anon RSS, preventing freed staging/command buffers from being compressed into ZRAM.
+        int zero = mallopt(M_BIONIC_ZERO_INIT, 1), decay = mallopt(M_DECAY_TIME, 0);
 #ifndef M_CACHE_COUNT_MAX
 #define M_CACHE_COUNT_MAX (-200)
 #endif
@@ -1615,7 +1617,7 @@ extern "C" void android_main(android_app* app) {
 #endif
         int cache_cnt = mallopt(M_CACHE_COUNT_MAX, 256);
         int cache_sz = mallopt(M_CACHE_SIZE_MAX, 16 << 20);
-        nx::log("heap: zero-fill off (%d), page release delayed (%d), scudo cache (%d, %d)",
+        nx::log("heap: zero-fill off (%d), page release immediate (%d), scudo cache (%d, %d)",
                 zero, decay, cache_cnt, cache_sz);
     }
     start_memory_guard();

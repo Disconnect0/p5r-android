@@ -283,6 +283,12 @@ VkDescriptorSet frame_descriptor_set(VkDescriptorSetLayout layout);
 uint64_t frame_descriptor_epoch(bool force_rotate = false);
 VkDescriptorSet frame_ssbo_descriptor_set(VkDescriptorSetLayout layout);
 uint64_t frame_ssbo_descriptor_epoch(bool force_rotate = false);
+// Scene-teardown: force-rotate both descriptor bank rings so stale sampler/ubo-dynamic sets are reclaimed
+// (prevents the monotonic pool creep sampler 181->22K, ubo dynamic 180->7.2K across field-scene transitions).
+// Call after frame_wait_all() to ensure no in-flight fences reference the pools being reset.
+void frame_descriptor_reset_on_scene_end();
+// Thread-safe scene-teardown request from game thread (processed under g_gpu in gpu_present).
+void request_scene_teardown();
 // Pipelined: a submit with dispatches is split after the last one; its first part is queued at once and carries the
 // write-backs. frame_plan_split counts the submit's DispatchCompute commands and returns the last top-level list that
 // has one (SIZE_MAX: no split). frame_split ends the first part and returns the command buffer of the rest (once per
@@ -343,6 +349,7 @@ inline bool targets_same(const Targets& a, const Targets& b) {
 void draw_begin_submit();
 void draw_end_submit();  // after the GPU finished the submit
 void linear_targets_write_back(VkCommandBuffer cb);  // nvn_draw.cpp: pitch-linear targets drawn into, back to guest memory
+void linear_targets_discard();                     // drop pending linear targets when present is skipped (minimized/error)
 void draw_log_stats();
 void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const Targets& targets);
 // reason (counted in the `nvn passes ended` log): 0 submit end, 1 draw, 2 dispatch, 3 clear of other targets,
@@ -489,6 +496,7 @@ void written_reset();            // nvn_written.cpp
 bool written_separate();         // nvn_written.cpp (nvn_draw_state.h)
 uint64_t written_bind_count();   // nvn_written.cpp: written_bind calls so far (a dispatch bound storage it writes)
 void trace_nan_write_back(const uint8_t* from, const uint8_t* to, uint64_t size);  // nvn_draw_trace.cpp
+void cache_trim_scene_end();  // nvn_buffer_cache.cpp (nvn_draw_state.h)
 }
 
 }  // namespace nx::nvn

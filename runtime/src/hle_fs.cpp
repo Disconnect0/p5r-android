@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -369,8 +370,20 @@ fs::path save_dir_of(uint64_t uid_addr) {
 void EnsureSaveData(CPU& c) {
     std::error_code ec;
     fs::path p = save_dir_of(c.x[0]);
+    // Cache verified paths: skip redundant create_directories calls (save/load UI opens 16 consecutive
+    // EnsureSaveData calls for the same path, costing 15 unnecessary scoped-storage mounts).
+    static std::mutex s_ensured_lock;
+    static std::unordered_set<std::string> s_ensured;
+    {
+        std::lock_guard lk(s_ensured_lock);
+        if (s_ensured.count(p.string())) { c.x[0] = kOk; return; }
+    }
     fs::create_directories(p, ec);
     log("fs: EnsureSaveData -> %s", p.string().c_str());
+    {
+        std::lock_guard lk(s_ensured_lock);
+        s_ensured.insert(p.string());
+    }
     c.x[0] = kOk;
 }
 

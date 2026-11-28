@@ -111,6 +111,7 @@ bool is_buffer_cache_buffer(VkBuffer buf);
 uint64_t cache_evict_epoch();
 void cache_evict_address(const uint8_t* p);
 void cache_begin_submit();  // frees the copies retired submits read
+void cache_trim_scene_end();  // aggressively evict cold entries on scene teardown to curb ZRAM pressure
 void cache_log();
 void dedup_reset();                                     // at each submit
 void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay

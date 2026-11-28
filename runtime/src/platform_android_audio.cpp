@@ -185,6 +185,10 @@ bool audio_stream_create_locked() {
         g_device = 0;
         g_latency_ns.store(0, std::memory_order_relaxed);
     }
+    // Target ~2 bursts (192-384 frames at 48 kHz) in AAudio's HAL buffer to trim audio latency
+    // while letting g_ring handle any A/V sync queuing without underruns.
+    const int32_t burst = AAudioStream_getFramesPerBurst(s);
+    if (burst > 0) AAudioStream_setBufferSizeInFrames(s, burst * 2);
     res = AAudioStream_requestStart(s);
     if (res != AAUDIO_OK) {
         nx::log("audio: AAudioStream_requestStart failed (%d)", int(res));

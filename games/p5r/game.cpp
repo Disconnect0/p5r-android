@@ -25,6 +25,7 @@ namespace nx {
 namespace nvn {
 uint64_t presents_recorded();  // runtime nvn_state.cpp: nvnQueuePresentTexture calls so far
 void linear_write_back_pause(bool paused);  // runtime nvn_draw.cpp: no copies of linear targets back to memory
+void request_scene_teardown();              // runtime nvn_vk.cpp: thread-safe scene-end cleanup under g_gpu
 }
 
 const game::Info game::kInfo = {"p5r", "Persona 5 Royal", 0x01005CA01580E000ull, "io.github.p5rrecomp",
@@ -335,6 +336,11 @@ void scan_tasks() {
     if (field != g_field_scene)
         log("p5r: field scene %s: the target %s", field ? "starts" : "ends",
             field ? "follows the device in steps of the cap, a half or a third of it" : "stays at 30 or more");
+    if (field != g_field_scene && !field) {
+        // Field scene is ending: request thread-safe teardown on the replay thread under g_gpu
+        // (drains GPU fences, resets descriptor pools, trims buffer cache, and purges Scudo pages).
+        nvn::request_scene_teardown();
+    }
     g_scene = scene, g_field_scene = field;
     // Films hide the 3D: the depth pyramid the culling reads need not come back to memory meanwhile (runtime).
     static bool paused = false;

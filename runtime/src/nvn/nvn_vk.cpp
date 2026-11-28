@@ -8,6 +8,12 @@
 #if !defined(_WIN32)
 #include <unistd.h>  // _exit (stdlib.h on Windows)
 #endif
+#if defined(__ANDROID__)
+#include <malloc.h>  // mallopt(M_PURGE, 0)
+#ifndef M_PURGE
+#define M_PURGE (-101)
+#endif
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +39,7 @@ using namespace nx::vk;
 namespace {
 
 std::recursive_mutex g_gpu;  // the whole GPU side: one submitting thread at a time
+std::atomic<bool> g_scene_teardown_pending{false};
 bool g_ready = false, g_failed = false;
 VkInstance g_instance = VK_NULL_HANDLE;
 VkPhysicalDevice g_physical = VK_NULL_HANDLE;
@@ -851,6 +858,8 @@ std::shared_ptr<const DeferredValues> g_deferred;  // the submit being replayed 
 }
 const DeferredValues* current_deferred() { return g_deferred.get(); }
 
+void request_scene_teardown() { g_scene_teardown_pending.store(true, std::memory_order_release); }
+
 void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_ptr<const DeferredValues> deferred) {
     g_deferred = std::move(deferred);
     std::lock_guard lk(g_gpu);
@@ -885,7 +894,7 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
         g_cb = k == split_after && k + 1 < lists.size() ? frame_split(g_cb) : frame_cb(g_cb);
     }
     draw_end_rendering(g_cb);
-    linear_targets_write_back(g_cb);
+    if (plat::headless()) linear_targets_write_back(g_cb);  // swapchain mode coalesces once per present boundary
     const FrameTimes f1 = frame_times();  // the first part's submit and ring waits are not replay time
     g_timing.submits++;
     g_timing.replay_ns += plat::monotonic_ns() - t0 - (f1.encode_ns - f0.encode_ns) - (f1.fence_ns - f0.fence_ns);
@@ -955,9 +964,20 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
     PresentTimer timer;
     drain_objects();  // under the GPU lock, as in gpu_submit
     if (!init()) return;
+    if (g_scene_teardown_pending.exchange(false, std::memory_order_acq_rel)) {
+        if (async_gpu()) frame_wait_all();
+        frame_descriptor_reset_on_scene_end();
+        replay::cache_trim_scene_end();
+#if defined(__ANDROID__)
+        mallopt(M_PURGE, 0);  // release freed Scudo pages via MADV_DONTNEED immediately on scene teardown
+#endif
+    }
     if (!async_gpu() || pipelined()) free_retired_images(async_gpu() ? frame_completed() : UINT64_MAX);
     if (plat::headless()) return present_headless(texture);
-    if (plat::window_minimized()) return;
+    if (plat::window_minimized()) {
+        linear_targets_discard();
+        return;
+    }
     if (plat::window_generation() != g_window_gen) {  // Android: a new window after home or the lock screen
         if (async_gpu()) frame_wait_all();
         p_vkDeviceWaitIdle(g_device);
@@ -967,15 +987,23 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
         log("nvn/vk: new window: surface and swapchain re-made");
         if (!make_surface()) return;
     }
-    if (!g_swapchain && !make_swapchain()) return;
+    if (!g_swapchain && !make_swapchain()) {
+        linear_targets_discard();
+        return;
+    }
     uint32_t index = 0;
     VkSemaphore acquired = async_gpu() ? frame_acquire_semaphore() : g_acquired;
     VkResult r = p_vkAcquireNextImageKHR(g_device, g_swapchain, UINT64_MAX, acquired, VK_NULL_HANDLE, &index);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        linear_targets_discard();
         make_swapchain();
         return;
     }
-    if (!check(r, "vkAcquireNextImageKHR") || !begin()) return;
+    if (!async_gpu()) g_upload_used = 0;
+    if (!check(r, "vkAcquireNextImageKHR") || !begin()) {
+        linear_targets_discard();
+        return;
+    }
     static uint64_t probes = 0;
     gpu_probe_record(g_cb, ++probes);  // NX_GPU_PROBE (nvn_gpu_probe.cpp)
     GpuImage* src = image_of(texture);
@@ -1037,14 +1065,18 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
     bool dump = src && due;
     if (dump) transition(g_cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);  // the present pass left it sampled
     dump = dump && frame_dump_record(g_cb, *src);
+    // Coalesce linear render-target write-backs so each target is copied at most once per present boundary.
+    linear_targets_write_back(g_cb);
     VkSemaphore rendered = async_gpu() ? frame_rendered_semaphore(index) : g_rendered;
     // Reset cross-submit compute regions at the end of the frame; written_take()
     // inside frame_submit() will collect any remaining untaken regions first.
     // Submit the frame's render work with signal = image_ready.
     if (async_gpu())  // the blit's fence is not waited for (vkQueuePresentKHR waits on `rendered`); a dumped frame is
-        frame_submit(acquired, rendered, {}, dump);
-    else
+        frame_submit(acquired, rendered, {}, dump, draw_take_late_write_backs());
+    else {
         end_and_wait(acquired, rendered);
+        for (const WriteBack& w : draw_take_late_write_backs()) apply_write_back(w);
+    }
     replay::written_reset();
     if (dump) frame_dump_write(*src, presents);
     if (due) debug_dump_textures(presents);

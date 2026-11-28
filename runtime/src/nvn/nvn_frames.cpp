@@ -768,6 +768,39 @@ void frame_wait_all() {
     for (uint32_t k = 0; k < g_slot_count; k++) janitor_wait(g_slots[k].reset_done);
 }
 
+// Called on P5R field-scene teardown (after frame_wait_all drained in-flight fences): force-rotate both descriptor
+// bank rings so the now-stale sampler and ubo-dynamic sets are reclaimed before the next scene's allocations.
+// This prevents the monotonic creep of sampler (181 -> 22 K) and ubo dynamic (180 -> 7.2 K) across transitions.
+void frame_descriptor_reset_on_scene_end() {
+    if (!async_gpu()) {
+        ++g_desc_epoch;
+        ++g_ssbo_desc_epoch;
+        return;
+    }
+    // frame_wait_all() already drained all in-flight fences, so every bank in both rings
+    // has last_serial <= g_completed and can be reset immediately to release pool allocations.
+    VkDevice dev = vk_device();
+    for (uint32_t i = 0; i < kDescBanks; i++) {
+        DescBank& b = g_desc_banks[i];
+        if (b.pool && (b.sets_used || b.last_serial)) p_vkResetDescriptorPool(dev, b.pool, 0);
+        b.sets_used = 0;
+        std::fill(std::begin(b.descs_used), std::end(b.descs_used), 0u);
+        b.last_serial = 0;
+
+        DescBank& sb = g_ssbo_desc_banks[i];
+        if (sb.pool && (sb.sets_used || sb.last_serial)) p_vkResetDescriptorPool(dev, sb.pool, 0);
+        sb.sets_used = 0;
+        std::fill(std::begin(sb.descs_used), std::end(sb.descs_used), 0u);
+        sb.last_serial = 0;
+    }
+    g_active_desc_bank = 0;
+    g_active_ssbo_bank = 0;
+    ++g_desc_epoch;
+    ++g_ssbo_desc_epoch;
+    log("nvn/vk: all descriptor pools reset on scene end (epoch %llu / %llu)",
+        (unsigned long long)g_desc_epoch, (unsigned long long)g_ssbo_desc_epoch);
+}
+
 uint64_t frame_upload_used() { return g_head - g_begin; }
 uint64_t frame_ring_size() { return async_gpu() ? g_ring_size : 0; }
 

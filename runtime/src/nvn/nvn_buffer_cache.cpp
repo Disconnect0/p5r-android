@@ -38,6 +38,9 @@ constexpr uint64_t kBlock = 16ull << 20;  // bytes per memory block
 constexpr uint64_t kAlign = 256;          // every copy: the largest buffer offset alignment Vulkan allows
 constexpr uint64_t kMaxCopy = 4ull << 20; // larger ranges stay in the ring (one copy per submit)
 constexpr uint64_t kStaleSubmits = 1800;  // keep resident across camera turns (~600 frames) without swap bloat
+// Cap at 32 MB on RADV/Xclipse (8 GB RAM) to prevent ZRAM pressure from cold buffer-cache entries.
+// NX_BUFFER_CACHE_MB can override at runtime.
+constexpr uint64_t kSceneTrimStaleSubmits = 60;  // entries unseen for 60 submits (~20 frames) on scene end
 constexpr uint32_t kStableSeen = 3;       // 3 consecutive matching submits before entering g_entries
 constexpr uint64_t kSeenGap = 24;         // tolerate temporary frustum-cull intervals (~8 frames)
 constexpr uint32_t kClasses = 15;         // copy sizes 256 B << class, up to 4 MB
@@ -235,7 +238,7 @@ bool on() {
 
 uint64_t budget() {
     if (!g_budget) {
-        const long def_mb = is_high_ram_device() ? 256l : (is_radv_xclipse() ? 192l : 64l);
+        const long def_mb = is_high_ram_device() ? 256l : (is_radv_xclipse() ? 32l : 64l);
         long mb = std::getenv("NX_BUFFER_CACHE_MB") ? std::atol(std::getenv("NX_BUFFER_CACHE_MB")) : def_mb;
         g_budget = uint64_t(std::clamp(mb, 16l, 1024l)) << 20;
     }
@@ -361,6 +364,53 @@ void cache_begin_submit() {
         }
     g_retired.resize(kept);
     if (++g_submits % 64 == 0) evict_stale();
+}
+
+// Aggressively evict entries unseen since the scene ended to free host-visible Vulkan memory
+// back to the OS before kswapd compresses it into ZRAM.  Called from gpu_present() on scene teardown
+// (requested from games/p5r/game.cpp) after frame_wait_all() so g_submitted == g_completed.
+void cache_trim_scene_end() {
+    if (!on()) return;
+    // Free anything retired but not yet returned to the free lists.
+    const uint64_t done = async_gpu() ? frame_completed() : UINT64_MAX;
+    size_t kept = 0;
+    for (const Retired& r : g_retired)
+        if (r.serial <= done) {
+            g_free[r.size_class].push_back(r.slot);
+            g_used -= class_bytes(r.size_class);
+        } else {
+            g_retired[kept++] = r;
+        }
+    g_retired.resize(kept);
+    // Evict entries not referenced in the last kSceneTrimStaleSubmits submits (cold scene geometry).
+    for (auto it = g_entries.begin(); it != g_entries.end();) {
+        if (it->second.seen + kSceneTrimStaleSubmits < g_submits) {
+            const uint8_t* key_p = it->first;
+            clear_entry_front(key_p);
+            retire(it->second);
+            g_evict_epoch++;
+            g_stats_cache.evicted++;
+            PageChurn& pc = g_page_churn[page_churn_index(key_p)];
+            if (pc.cached_count > 0) {
+                if (--pc.cached_count == 0) pc.cached_bloom = 0;
+            }
+            it = g_entries.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // Immediately free the now-unreferenced retired slots so their Vulkan memory pages
+    // can be returned via MADV_DONTNEED by the subsequent mallopt(M_PURGE, 0) call.
+    kept = 0;
+    for (const Retired& r : g_retired)
+        if (r.serial <= done) {
+            g_free[r.size_class].push_back(r.slot);
+            g_used -= class_bytes(r.size_class);
+        } else {
+            g_retired[kept++] = r;
+        }
+    g_retired.resize(kept);
+    log("nvn: buffer cache trimmed on scene end: %zu entries kept, %.1f MB used", g_entries.size(), double(g_used) / 1e6);
 }
 
 bool cache_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out) {

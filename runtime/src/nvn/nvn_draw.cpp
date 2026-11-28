@@ -737,9 +737,11 @@ void restart_stats(uint32_t mode, const Cmd& c) {
 // depths, took far buildings for hidden and left them out for whole seconds (the Yongen-Jaya pop-ins, PROGRESO 72).
 // The images drawn into in a submit are copied to the upload buffer at its end and written to guest memory once it
 // completed, with the other write-backs. NX_LINEAR_WRITE_BACK=0: not (as before).
-std::vector<uint64_t> g_linear_targets;  // this submit's (NVNtexture*), drawn into
+std::vector<uint64_t> g_linear_targets;  // this frame's (NVNtexture*), drawn into (coalesced per present)
 std::vector<WriteBack> g_late_write_backs;  // their copies: applied when the submit retires, never waited for
 uint64_t g_linear_copies = 0;
+
+void linear_targets_discard() { g_linear_targets.clear(); }
 
 bool linear_write_back_on() {
     static const bool s_linear_write_back_on = !(std::getenv("NX_LINEAR_WRITE_BACK") && std::getenv("NX_LINEAR_WRITE_BACK")[0] == '0');
@@ -2221,7 +2223,8 @@ void draw_begin_submit() {
     g_pass_cb = VK_NULL_HANDLE;
     s_pass_targets_ver = 0;
     s_format_targets_ver = 0;
-    g_linear_targets.clear(), g_late_write_backs.clear();
+    if (plat::headless()) g_linear_targets.clear();
+    g_late_write_backs.clear();
     g_vertex_pending = false, g_vertex_visible_at = g_pass_serial;  // each command buffer begins with a full barrier
     g_bound = Bound{};  // a new command buffer
     g_last_compute_pipeline = VK_NULL_HANDLE;

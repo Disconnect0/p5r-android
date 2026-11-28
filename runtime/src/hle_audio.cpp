@@ -24,7 +24,7 @@ namespace nx {
 namespace {
 
 constexpr uint64_t kBytesPerSecond = 48000 * 2 * 2;
-constexpr uint32_t kMaxInFlight = 4;  // buffers queued in the device (4 x ~21 ms)
+constexpr uint32_t kMaxInFlight = 3;  // buffers queued in the device (keep ~2 pending bursts)
 
 // Our AudioOutBuffer layout (only our HLE reads it): {void* data; u64 capacity; u64 size}.
 struct Out {
