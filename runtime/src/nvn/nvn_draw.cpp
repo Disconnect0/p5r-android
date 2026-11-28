@@ -741,8 +741,6 @@ std::vector<uint64_t> g_linear_targets;  // this frame's (NVNtexture*), drawn in
 std::vector<WriteBack> g_late_write_backs;  // their copies: applied when the submit retires, never waited for
 uint64_t g_linear_copies = 0;
 
-void linear_targets_discard() { g_linear_targets.clear(); }
-
 bool linear_write_back_on() {
     static const bool s_linear_write_back_on = !(std::getenv("NX_LINEAR_WRITE_BACK") && std::getenv("NX_LINEAR_WRITE_BACK")[0] == '0');
     return s_linear_write_back_on;
@@ -2112,6 +2110,8 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
 // A game that knows nobody reads its linear targets for a while pauses their copies (P5R: during films, whose
 // screen hides the 3D its culling serves; ~1.5 ms of the render thread per frame on the Adreno 610).
 void linear_write_back_pause(bool paused) { g_linear_paused.store(paused, std::memory_order_relaxed); }
+
+void linear_targets_discard() { g_linear_targets.clear(); }
 
 void linear_targets_write_back(VkCommandBuffer cb) {  // before the submit ends, outside any pass
     if (g_linear_targets.empty()) return;
