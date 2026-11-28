@@ -985,7 +985,10 @@ void gpu_present(uint64_t texture, const int32_t* crop, uint64_t origin_ns) {
         if (g_swapchain) p_vkDestroySwapchainKHR(g_device, g_swapchain, nullptr);
         g_swapchain = VK_NULL_HANDLE;
         log("nvn/vk: new window: surface and swapchain re-made");
-        if (!make_surface()) return;
+        if (!make_surface()) {
+            linear_targets_discard();
+            return;
+        }
     }
     if (!g_swapchain && !make_swapchain()) {
         linear_targets_discard();

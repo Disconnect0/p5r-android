@@ -374,15 +374,16 @@ void EnsureSaveData(CPU& c) {
     // EnsureSaveData calls for the same path, costing 15 unnecessary scoped-storage mounts).
     static std::mutex s_ensured_lock;
     static std::unordered_set<std::string> s_ensured;
+    const std::string key = p.string();
     {
         std::lock_guard lk(s_ensured_lock);
-        if (s_ensured.count(p.string())) { c.x[0] = kOk; return; }
+        if (s_ensured.count(key)) { c.x[0] = kOk; return; }
     }
     fs::create_directories(p, ec);
-    log("fs: EnsureSaveData -> %s", p.string().c_str());
-    {
+    log("fs: EnsureSaveData -> %s", key.c_str());
+    if (!ec) {
         std::lock_guard lk(s_ensured_lock);
-        s_ensured.insert(p.string());
+        s_ensured.insert(key);
     }
     c.x[0] = kOk;
 }
