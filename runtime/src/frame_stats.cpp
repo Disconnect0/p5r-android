@@ -79,7 +79,7 @@ void place(int role) {
     for (size_t k = 0; k < c.cluster.size(); k++) {
         int cl = c.cluster[k];
         bool in = false;
-        if (mode == 2) {
+        if (mode == 2 || (mode == 1 && c.clusters >= 4)) {
             in = cl > 0;
         } else if (role == 0) {
             in = top_count >= 2 ? int(k) == last_top_cpu : cl == top;
@@ -159,7 +159,7 @@ void place_fast_cores() {
     CPU_ZERO(&set);
     int top = c.clusters - 1;
     for (size_t k = 0; k < c.cluster.size(); k++) {
-        if (mode == 2 ? c.cluster[k] > 0 : c.cluster[k] == top) CPU_SET(int(k), &set);
+        if ((mode == 2 || c.clusters >= 4) ? c.cluster[k] > 0 : c.cluster[k] == top) CPU_SET(int(k), &set);
     }
     sched_setaffinity(0, sizeof set, &set);
 #endif

@@ -20,6 +20,7 @@
 #include <nx/runtime.h>
 
 #include "nvn_draw_state.h"
+#include "nvn_vk.h"
 #include "platform.h"
 
 namespace nx::nvn {
@@ -234,7 +235,7 @@ bool on() {
 
 uint64_t budget() {
     if (!g_budget) {
-        const long def_mb = is_high_ram_device() ? 256l : 64l;
+        const long def_mb = is_high_ram_device() ? 256l : (is_radv_xclipse() ? 192l : 64l);
         long mb = std::getenv("NX_BUFFER_CACHE_MB") ? std::atol(std::getenv("NX_BUFFER_CACHE_MB")) : def_mb;
         g_budget = uint64_t(std::clamp(mb, 16l, 1024l)) << 20;
     }
